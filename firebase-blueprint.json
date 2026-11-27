@@ -1,0 +1,270 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated editor profile and synced studio preferences.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase Auth UID matching path userId"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Editor display name"
+        },
+        "themeMode": {
+          "type": "string",
+          "enum": ["OLED_DARK", "STUDIO_DARK", "DAYLIGHT"],
+          "description": "Preferred studio theme mode"
+        },
+        "batterySaverEnabled": {
+          "type": "boolean",
+          "description": "Whether low-battery preview optimization is active"
+        },
+        "defaultResolution": {
+          "type": "string",
+          "enum": ["4K", "1080P", "720P"],
+          "description": "Default export video resolution"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp via FieldValue.serverTimestamp()"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp via FieldValue.serverTimestamp()"
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "themeMode",
+        "batterySaverEnabled",
+        "defaultResolution",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "VideoProject": {
+      "title": "VideoProject",
+      "description": "Cloud-synced non-linear video editing project including timeline clips, color grading parameters, multi-track audio mix, and automated captions.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID matching path userId"
+        },
+        "title": {
+          "type": "string",
+          "description": "Project title (1-100 chars)"
+        },
+        "aspectRatio": {
+          "type": "string",
+          "enum": ["16:9", "9:16", "1:1", "4:5"],
+          "description": "Canvas aspect ratio"
+        },
+        "resolution": {
+          "type": "string",
+          "enum": ["4K", "1080P", "720P"],
+          "description": "Target render resolution"
+        },
+        "frameRate": {
+          "type": "integer",
+          "description": "Target frames per second (24, 30, or 60)"
+        },
+        "totalDurationMs": {
+          "type": "integer",
+          "description": "Computed timeline duration in milliseconds"
+        },
+        "colorPreset": {
+          "type": "string",
+          "enum": [
+            "NATURAL",
+            "KODAK_2383",
+            "TEAL_ORANGE",
+            "FUJI_ETERNA",
+            "NOIR_400",
+            "CYBER_NEON",
+            "GOLDEN_HOUR",
+            "FLAT_LOG"
+          ],
+          "description": "Active real-time color grading LUT preset"
+        },
+        "exposure": {
+          "type": "number",
+          "description": "Exposure adjustment (-2.0 to 2.0)"
+        },
+        "contrast": {
+          "type": "number",
+          "description": "Contrast multiplier (0.5 to 2.0)"
+        },
+        "saturation": {
+          "type": "number",
+          "description": "Saturation multiplier (0.0 to 2.0)"
+        },
+        "temperature": {
+          "type": "number",
+          "description": "Color temperature shift (-1.0 to 1.0)"
+        },
+        "tint": {
+          "type": "number",
+          "description": "Green-magenta tint shift (-1.0 to 1.0)"
+        },
+        "vignette": {
+          "type": "number",
+          "description": "Vignette intensity (0.0 to 1.0)"
+        },
+        "captionStyle": {
+          "type": "string",
+          "enum": ["KINETIC_BOLD", "MINIMAL_SUB", "BROADCAST_BAR", "NEON_POP"],
+          "description": "Rendered subtitle style preset"
+        },
+        "clips": {
+          "type": "array",
+          "description": "Ordered timeline video clip segments (max 50)"
+        },
+        "audioTracks": {
+          "type": "array",
+          "description": "Multi-track audio mixer channels (max 12)"
+        },
+        "captions": {
+          "type": "array",
+          "description": "Timed caption cues synced to timeline (max 200)"
+        },
+        "aiSummary": {
+          "type": "string",
+          "description": "Latest AI quick-cut or captioning edit notes"
+        },
+        "cloudBackupStatus": {
+          "type": "string",
+          "enum": ["SYNCED", "LOCAL_ONLY", "EXPORTED"],
+          "description": "Sync and export state badge"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp via FieldValue.serverTimestamp()"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp via FieldValue.serverTimestamp()"
+        }
+      },
+      "required": [
+        "userId",
+        "title",
+        "aspectRatio",
+        "resolution",
+        "frameRate",
+        "totalDurationMs",
+        "colorPreset",
+        "exposure",
+        "contrast",
+        "saturation",
+        "temperature",
+        "tint",
+        "vignette",
+        "captionStyle",
+        "clips",
+        "audioTracks",
+        "captions",
+        "aiSummary",
+        "cloudBackupStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ExportRecord": {
+      "title": "ExportRecord",
+      "description": "Immutable log of rendered 4K/1080p exports and social media share jobs.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID matching path userId"
+        },
+        "projectId": {
+          "type": "string",
+          "description": "Parent VideoProject document ID"
+        },
+        "projectTitle": {
+          "type": "string",
+          "description": "Snapshot title of exported project"
+        },
+        "resolution": {
+          "type": "string",
+          "enum": ["4K", "1080P", "720P"],
+          "description": "Exported resolution"
+        },
+        "codec": {
+          "type": "string",
+          "enum": ["HEVC_H265", "AVC_H264"],
+          "description": "Export video codec"
+        },
+        "frameRate": {
+          "type": "integer",
+          "description": "Export frame rate (24, 30, or 60)"
+        },
+        "durationMs": {
+          "type": "integer",
+          "description": "Exported video duration in milliseconds"
+        },
+        "estimatedSizeMb": {
+          "type": "number",
+          "description": "Rendered or estimated output file size in MB"
+        },
+        "destination": {
+          "type": "string",
+          "enum": ["DEVICE_GALLERY", "YOUTUBE_SHORTS", "INSTAGRAM_REELS", "TIKTOK", "CLOUD_MANIFEST"],
+          "description": "Target export or social destination"
+        },
+        "localOutputUri": {
+          "type": "string",
+          "description": "Local MediaStore or exported manifest URI string"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["COMPLETED", "FAILED"],
+          "description": "Terminal export job status"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp via FieldValue.serverTimestamp()"
+        }
+      },
+      "required": [
+        "userId",
+        "projectId",
+        "projectTitle",
+        "resolution",
+        "codec",
+        "frameRate",
+        "durationMs",
+        "estimatedSizeMb",
+        "destination",
+        "localOutputUri",
+        "status",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User studio settings and profile document isolated by UID"
+    },
+    "/users/{userId}/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/VideoProject" },
+      "description": "Cloud-synced video editing projects owned by userId"
+    },
+    "/users/{userId}/exports/{exportId}": {
+      "schema": { "$ref": "#/entities/ExportRecord" },
+      "description": "Immutable export and social media sharing history owned by userId"
+    }
+  }
+}

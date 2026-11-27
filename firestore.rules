@@ -1,0 +1,196 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Shared Security Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isValidResolution(res) {
+      return res in ['4K', '1080P', '720P'];
+    }
+
+    function isValidFrameRate(fps) {
+      return fps is int && (fps == 24 || fps == 30 || fps == 60);
+    }
+
+    // --- Validation Helpers ---
+    function isValidUserProfile(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId.size() <= 128 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.themeMode is string && data.themeMode in ['OLED_DARK', 'STUDIO_DARK', 'DAYLIGHT'] &&
+        data.batterySaverEnabled is bool &&
+        data.defaultResolution is string && isValidResolution(data.defaultResolution) &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidVideoProject(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+        data.aspectRatio is string && data.aspectRatio in ['16:9', '9:16', '1:1', '4:5'] &&
+        data.resolution is string && isValidResolution(data.resolution) &&
+        isValidFrameRate(data.frameRate) &&
+        data.totalDurationMs is int && data.totalDurationMs >= 0 && data.totalDurationMs <= 36000000 &&
+        data.colorPreset is string && data.colorPreset in [
+          'NATURAL', 'KODAK_2383', 'TEAL_ORANGE', 'FUJI_ETERNA',
+          'NOIR_400', 'CYBER_NEON', 'GOLDEN_HOUR', 'FLAT_LOG'
+        ] &&
+        data.exposure is number && data.exposure >= -2.0 && data.exposure <= 2.0 &&
+        data.contrast is number && data.contrast >= 0.5 && data.contrast <= 2.0 &&
+        data.saturation is number && data.saturation >= 0.0 && data.saturation <= 2.0 &&
+        data.temperature is number && data.temperature >= -1.0 && data.temperature <= 1.0 &&
+        data.tint is number && data.tint >= -1.0 && data.tint <= 1.0 &&
+        data.vignette is number && data.vignette >= 0.0 && data.vignette <= 1.0 &&
+        data.captionStyle is string && data.captionStyle in ['KINETIC_BOLD', 'MINIMAL_SUB', 'BROADCAST_BAR', 'NEON_POP'] &&
+        data.clips is list && data.clips.size() <= 50 && (data.clips.size() == 0 || data.clips[0] is map) &&
+        data.audioTracks is list && data.audioTracks.size() <= 12 && (data.audioTracks.size() == 0 || data.audioTracks[0] is map) &&
+        data.captions is list && data.captions.size() <= 200 && (data.captions.size() == 0 || data.captions[0] is map) &&
+        data.aiSummary is string && data.aiSummary.size() <= 600 &&
+        data.cloudBackupStatus is string && data.cloudBackupStatus in ['SYNCED', 'LOCAL_ONLY', 'EXPORTED'] &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidExportRecord(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId.size() <= 128 &&
+        isValidId(data.projectId) &&
+        data.projectTitle is string && data.projectTitle.size() >= 1 && data.projectTitle.size() <= 100 &&
+        data.resolution is string && isValidResolution(data.resolution) &&
+        data.codec is string && data.codec in ['HEVC_H265', 'AVC_H264'] &&
+        isValidFrameRate(data.frameRate) &&
+        data.durationMs is int && data.durationMs >= 0 && data.durationMs <= 36000000 &&
+        data.estimatedSizeMb is number && data.estimatedSizeMb >= 0.0 && data.estimatedSizeMb <= 50000.0 &&
+        data.destination is string && data.destination in [
+          'DEVICE_GALLERY', 'YOUTUBE_SHORTS', 'INSTAGRAM_REELS', 'TIKTOK', 'CLOUD_MANIFEST'
+        ] &&
+        data.localOutputUri is string && data.localOutputUri.size() <= 500 &&
+        data.status is string && data.status in ['COMPLETED', 'FAILED'] &&
+        isValidTimestamp(data.createdAt);
+    }
+
+    // --- Collection: /users/{userId} ---
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        incoming().keys().hasAll([
+          'userId', 'displayName', 'themeMode', 'batterySaverEnabled',
+          'defaultResolution', 'createdAt', 'updatedAt'
+        ]) &&
+        incoming().keys().hasOnly([
+          'userId', 'displayName', 'themeMode', 'batterySaverEnabled',
+          'defaultResolution', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidUserProfile(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'themeMode', 'batterySaverEnabled', 'defaultResolution', 'updatedAt'
+        ]);
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // --- Subcollection: /users/{userId}/projects/{projectId} ---
+      match /projects/{projectId} {
+        allow get: if isOwner(userId) && isValidId(projectId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+          isValidId(projectId) &&
+          incoming().keys().hasAll([
+            'userId', 'title', 'aspectRatio', 'resolution', 'frameRate',
+            'totalDurationMs', 'colorPreset', 'exposure', 'contrast',
+            'saturation', 'temperature', 'tint', 'vignette', 'captionStyle',
+            'clips', 'audioTracks', 'captions', 'aiSummary',
+            'cloudBackupStatus', 'createdAt', 'updatedAt'
+          ]) &&
+          incoming().keys().hasOnly([
+            'userId', 'title', 'aspectRatio', 'resolution', 'frameRate',
+            'totalDurationMs', 'colorPreset', 'exposure', 'contrast',
+            'saturation', 'temperature', 'tint', 'vignette', 'captionStyle',
+            'clips', 'audioTracks', 'captions', 'aiSummary',
+            'cloudBackupStatus', 'createdAt', 'updatedAt'
+          ]) &&
+          isValidVideoProject(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+          isValidId(projectId) &&
+          isValidVideoProject(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          (
+            // Action 1: Project metadata / timeline / grading / audio / caption edit
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'aspectRatio', 'resolution', 'frameRate',
+              'totalDurationMs', 'colorPreset', 'exposure', 'contrast',
+              'saturation', 'temperature', 'tint', 'vignette', 'captionStyle',
+              'clips', 'audioTracks', 'captions', 'aiSummary',
+              'cloudBackupStatus', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isOwner(userId) && isValidId(projectId);
+      }
+
+      // --- Subcollection: /users/{userId}/exports/{exportId} ---
+      match /exports/{exportId} {
+        allow get: if isOwner(userId) && isValidId(exportId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+          isValidId(exportId) &&
+          incoming().keys().hasAll([
+            'userId', 'projectId', 'projectTitle', 'resolution', 'codec',
+            'frameRate', 'durationMs', 'estimatedSizeMb', 'destination',
+            'localOutputUri', 'status', 'createdAt'
+          ]) &&
+          incoming().keys().hasOnly([
+            'userId', 'projectId', 'projectTitle', 'resolution', 'codec',
+            'frameRate', 'durationMs', 'estimatedSizeMb', 'destination',
+            'localOutputUri', 'status', 'createdAt'
+          ]) &&
+          isValidExportRecord(incoming(), userId) &&
+          exists(/databases/$(database)/documents/users/$(userId)/projects/$(incoming().projectId));
+
+        // Terminal export records are immutable
+        allow update: if false;
+
+        allow delete: if isOwner(userId) && isValidId(exportId);
+      }
+    }
+  }
+}

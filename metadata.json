@@ -1,0 +1,6 @@
+{
+  "name": "FrameCut",
+  "description": "AI-powered mobile video editor with precision multi-track timeline, real-time color grading, automated captions, smart quick cuts, offline Room backups, and cloud project sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
