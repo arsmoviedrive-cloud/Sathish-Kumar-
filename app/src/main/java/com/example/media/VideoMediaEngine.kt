@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -20,6 +21,7 @@ import androidx.compose.ui.graphics.ColorMatrix
 import androidx.core.content.FileProvider
 import com.example.data.model.CaptionCue
 import com.example.data.model.CodecOption
+import com.example.data.model.ExportFormatOption
 import com.example.data.model.ResolutionOption
 import com.example.data.model.VideoProject
 import kotlinx.coroutines.CancellationException
@@ -44,6 +46,12 @@ data class ImportedVideoMeta(
     val height: Int
 )
 
+data class ImportedAudioMeta(
+    val uriString: String,
+    val displayName: String,
+    val durationMs: Long
+)
+
 data class BatteryTelemetry(
     val levelPercent: Int,
     val charging: Boolean,
@@ -62,6 +70,11 @@ data class ExportProgressState(
 )
 
 class VideoMediaEngine(private val context: Context) {
+
+    private val soundEffectsEngine by lazy { StudioSoundEffectsEngine(context) }
+
+    suspend fun ensureStudioAudioPreset(preset: StudioAudioPreset): String =
+        soundEffectsEngine.ensurePresetFilePath(preset)
 
     fun readBatteryTelemetry(
         batterySaverEnabled: Boolean,
@@ -138,12 +151,159 @@ class VideoMediaEngine(private val context: Context) {
         )
     }
 
+    suspend fun inspectAudioUri(uri: Uri): ImportedAudioMeta = withContext(Dispatchers.IO) {
+        val retriever = MediaMetadataRetriever()
+        var durationMs = 10000L
+        var name = "Audio Track"
+        try {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: SecurityException) {
+                // Transient read grants may not support persistable permissions
+            }
+            context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val rawName = cursor.getString(0)
+                        if (!rawName.isNullOrBlank()) {
+                            name = rawName.substringBeforeLast('.').take(48)
+                        }
+                    }
+                }
+            retriever.setDataSource(context, uri)
+            durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()?.coerceAtLeast(500L) ?: 10000L
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to inspect audio metadata for $uri: ${e.message}")
+        } finally {
+            runCatching { retriever.release() }
+        }
+        ImportedAudioMeta(
+            uriString = uri.toString(),
+            displayName = name,
+            durationMs = durationMs
+        )
+    }
+
+    suspend fun saveAiClipKeyframe(clipId: String, bitmap: Bitmap): String = withContext(Dispatchers.IO) {
+        val dir = File(context.filesDir, "ai_clips").apply { mkdirs() }
+        val file = File(dir, "${clipId}.png")
+        file.outputStream().use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 92, out)
+        }
+        "ai_file://${file.absolutePath}"
+    }
+
+    suspend fun saveAiVideoFile(
+        clipId: String,
+        videoBytes: ByteArray,
+        mimeType: String
+    ): Pair<String, Long> = withContext(Dispatchers.IO) {
+        val ext = when {
+            mimeType.contains("webm", ignoreCase = true) -> "webm"
+            mimeType.contains("quicktime", ignoreCase = true) -> "mov"
+            else -> "mp4"
+        }
+        val dir = File(context.filesDir, "ai_videos").apply { mkdirs() }
+        val file = File(dir, "${clipId}.$ext")
+        file.outputStream().use { it.write(videoBytes) }
+
+        var durationMs = 6000L
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(file.absolutePath)
+            durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()?.coerceAtLeast(1500L) ?: 6000L
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not inspect generated video duration: ${e.message}")
+        } finally {
+            runCatching { retriever.release() }
+        }
+        Uri.fromFile(file).toString() to durationMs
+    }
+
+    suspend fun saveAiMusicFile(
+        trackId: String,
+        audioBytes: ByteArray,
+        mimeType: String
+    ): Pair<String, Long> = withContext(Dispatchers.IO) {
+        val ext = when {
+            mimeType.contains("wav", ignoreCase = true) -> "wav"
+            mimeType.contains("ogg", ignoreCase = true) -> "ogg"
+            mimeType.contains("aac", ignoreCase = true) || mimeType.contains("mp4", ignoreCase = true) -> "m4a"
+            else -> "mp3"
+        }
+        val dir = File(context.filesDir, "ai_music").apply { mkdirs() }
+        val file = File(dir, "${trackId}.$ext")
+        file.outputStream().use { it.write(audioBytes) }
+
+        var durationMs = 30000L
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(file.absolutePath)
+            durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()?.coerceAtLeast(1000L) ?: 30000L
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not inspect generated music duration: ${e.message}")
+        } finally {
+            runCatching { retriever.release() }
+        }
+        file.absolutePath to durationMs
+    }
+
+    suspend fun loadScaledBitmapFromUri(uri: Uri, maxDimension: Int = 1280): Bitmap? = withContext(Dispatchers.IO) {
+        runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, bounds)
+            }
+            var sampleSize = 1
+            val longest = maxOf(bounds.outWidth, bounds.outHeight)
+            while (longest > 0 && longest / sampleSize > maxDimension) {
+                sampleSize *= 2
+            }
+            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, decodeOpts)
+            }
+        }.onFailure { err ->
+            Log.w(TAG, "Failed to decode bitmap from URI $uri: ${err.message}")
+        }.getOrNull()
+    }
+
+    suspend fun saveBitmapToGallery(bitmap: Bitmap, title: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val safeName = title.replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(32).ifBlank { "FrameCut_AI" }
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, "${safeName}_${System.currentTimeMillis()}.png")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/FrameCut")
+                }
+            }
+            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("Could not create MediaStore gallery entry.")
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 96, out)
+            } ?: throw IllegalStateException("Could not open output stream for gallery image.")
+            uri.toString()
+        }
+    }
+
     suspend fun extractKeyframes(
         uriString: String,
         count: Int,
         batterySaverEnabled: Boolean
     ): List<Bitmap> = withContext(Dispatchers.IO) {
         if (uriString.isBlank()) return@withContext emptyList()
+        if (uriString.startsWith("ai_file://")) {
+            val path = uriString.removePrefix("ai_file://")
+            val bmp = runCatching { BitmapFactory.decodeFile(path) }.getOrNull()
+            return@withContext if (bmp != null) listOf(bmp) else emptyList()
+        }
         val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return@withContext emptyList()
         val retriever = MediaMetadataRetriever()
         val frames = mutableListOf<Bitmap>()
@@ -197,12 +357,13 @@ class VideoMediaEngine(private val context: Context) {
         durationMs: Long,
         resolution: ResolutionOption,
         codec: CodecOption,
-        fps: Long
+        fps: Long,
+        format: ExportFormatOption = ExportFormatOption.MP4
     ): Double {
         val seconds = (durationMs.coerceAtLeast(1000L) / 1000.0)
         val fpsFactor = if (fps >= 60L) 1.35 else 1.0
         val codecFactor = if (codec == CodecOption.HEVC_H265) 0.72 else 1.0
-        val megabits = resolution.bitrateMbps * fpsFactor * codecFactor * seconds
+        val megabits = resolution.bitrateMbps * fpsFactor * codecFactor * format.sizeMultiplier * seconds
         return ((megabits / 8.0) * 10.0).toInt() / 10.0
     }
 
@@ -211,21 +372,31 @@ class VideoMediaEngine(private val context: Context) {
         resolution: ResolutionOption,
         codec: CodecOption,
         fps: Long,
+        format: ExportFormatOption = ExportFormatOption.MP4,
         batterySaverEnabled: Boolean
     ): Flow<ExportProgressState> = flow {
-        val estimatedMb = estimateExportSizeMb(project.totalDurationMs, resolution, codec, fps)
-        emit(ExportProgressState(0.08f, "Preparing ${resolution.label} ${fps}fps ${codec.label} pipeline...", estimatedSizeMb = estimatedMb))
+        val estimatedMb = estimateExportSizeMb(project.totalDurationMs, resolution, codec, fps, format)
+        emit(
+            ExportProgressState(
+                0.08f,
+                "Preparing ${resolution.label} ${fps}fps ${format.label} (${codec.label}) pipeline...",
+                estimatedSizeMb = estimatedMb
+            )
+        )
 
-        val firstRealClip = project.typedClips().firstOrNull { it.sourceUri.isNotBlank() }
+        val firstRealClip = project.typedClips().firstOrNull {
+            it.sourceUri.isNotBlank() && !it.sourceUri.startsWith("ai_file://")
+        }
         val stepDelay = if (batterySaverEnabled) 180L else 110L
 
         if (firstRealClip != null) {
-            emit(ExportProgressState(0.25f, "Hardware remuxing trimmed video & audio tracks...", estimatedSizeMb = estimatedMb))
+            emit(ExportProgressState(0.25f, "Hardware remuxing ${format.label} video & audio tracks...", estimatedSizeMb = estimatedMb))
             val remuxedUri = remuxLocalVideoClip(
                 sourceUri = Uri.parse(firstRealClip.sourceUri),
                 trimStartMs = firstRealClip.trimStartMs,
                 trimEndMs = firstRealClip.trimEndMs,
-                outputTitle = project.title
+                outputTitle = project.title,
+                format = format
             )
             emit(ExportProgressState(0.75f, "Applying color LUT metadata & burning SRT sidecar...", estimatedSizeMb = estimatedMb))
             writeSrtSidecarFile(project.title, project.typedCaptions())
@@ -234,10 +405,10 @@ class VideoMediaEngine(private val context: Context) {
                 emit(
                     ExportProgressState(
                         progressFraction = 1.0f,
-                        stageLabel = "Saved MP4 to Movies/FrameCut",
+                        stageLabel = "Saved ${format.label} (${resolution.raw} ${fps}fps) to Movies/FrameCut",
                         completedOutputUri = remuxedUri.toString(),
                         completedShareUri = remuxedUri,
-                        shareMimeType = "video/mp4",
+                        shareMimeType = format.mimeType,
                         estimatedSizeMb = estimatedMb
                     )
                 )
@@ -246,13 +417,13 @@ class VideoMediaEngine(private val context: Context) {
         }
 
         // Fallback / Studio Project Pack export (for sample scenes or cross-device cloud edits without local raw media)
-        emit(ExportProgressState(0.32f, "Rendering ${resolution.label} Edit Decision List & LUT grade...", estimatedSizeMb = estimatedMb))
+        emit(ExportProgressState(0.32f, "Rendering ${resolution.label} ${fps}fps ${format.label} Edit Decision List...", estimatedSizeMb = estimatedMb))
         delay(stepDelay)
         emit(ExportProgressState(0.64f, "Mixing ${project.typedAudioTracks().size} audio tracks & ${project.typedCaptions().size} captions...", estimatedSizeMb = estimatedMb))
         val srtFile = writeSrtSidecarFile(project.title, project.typedCaptions())
         delay(stepDelay)
-        emit(ExportProgressState(0.88f, "Packaging shareable FrameCut render manifest...", estimatedSizeMb = estimatedMb))
-        val manifestFile = writeExportManifestFile(project, resolution, codec, fps, srtFile?.name)
+        emit(ExportProgressState(0.88f, "Packaging shareable ${format.label} render manifest...", estimatedSizeMb = estimatedMb))
+        val manifestFile = writeExportManifestFile(project, resolution, codec, fps, format, srtFile?.name)
         val shareUri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
@@ -262,7 +433,7 @@ class VideoMediaEngine(private val context: Context) {
         emit(
             ExportProgressState(
                 progressFraction = 1.0f,
-                stageLabel = "Render manifest & SRT captions ready to share",
+                stageLabel = "${resolution.raw} ${fps}fps ${format.label} render pack & SRT ready",
                 completedOutputUri = shareUri.toString(),
                 completedShareUri = shareUri,
                 shareMimeType = "application/json",
@@ -275,10 +446,11 @@ class VideoMediaEngine(private val context: Context) {
         sourceUri: Uri,
         trimStartMs: Long,
         trimEndMs: Long,
-        outputTitle: String
+        outputTitle: String,
+        format: ExportFormatOption
     ): Uri? {
         val safeTitle = outputTitle.replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(36).ifBlank { "FrameCut" }
-        val fileName = "${safeTitle}_${System.currentTimeMillis()}.mp4"
+        val fileName = "${safeTitle}_${System.currentTimeMillis()}.${format.extension}"
         val tempFile = File(File(context.cacheDir, "exports").apply { mkdirs() }, fileName)
 
         val extractor = MediaExtractor()
@@ -341,7 +513,7 @@ class VideoMediaEngine(private val context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = ContentValues().apply {
                     put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
-                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                    put(MediaStore.Video.Media.MIME_TYPE, format.mimeType)
                     put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/FrameCut")
                     put(MediaStore.Video.Media.IS_PENDING, 1)
                 }
@@ -396,11 +568,12 @@ class VideoMediaEngine(private val context: Context) {
         resolution: ResolutionOption,
         codec: CodecOption,
         fps: Long,
+        format: ExportFormatOption,
         srtName: String?
     ): File {
         val dir = File(context.filesDir, "exports").apply { mkdirs() }
         val safeTitle = project.title.replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(32).ifBlank { "FrameCut" }
-        val file = File(dir, "${safeTitle}_${resolution.raw}_${fps}fps.fcproj.json")
+        val file = File(dir, "${safeTitle}_${resolution.raw}_${fps}fps_${format.raw}.fcproj.json")
         val enriched = project.toBackupJson()
         file.writeText(enriched)
         return file

@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.ViewTimeline
@@ -71,11 +72,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.AspectRatioOption
 import com.example.data.model.AudioRole
+import com.example.ui.components.AiCreativeHubSheet
+import com.example.ui.components.AiMediaStudioMode
 import com.example.ui.components.AiStudioPanel
 import com.example.ui.components.AudioMixerPanel
 import com.example.ui.components.CaptionsPanel
 import com.example.ui.components.ColorGradingPanel
 import com.example.ui.components.ExportBackupPanel
+import com.example.ui.components.RenderExportSheet
 import com.example.ui.components.TimelineCanvas
 import com.example.ui.components.TimelineToolsPanel
 import com.example.ui.components.VideoPreviewStage
@@ -102,7 +106,10 @@ fun EditorScreen(
     }
 
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showRenderSheet by remember { mutableStateOf(false) }
+    var aiHubSheetMode by remember { mutableStateOf<AiMediaStudioMode?>(null) }
     var pendingOfflineJson by remember { mutableStateOf<String?>(null) }
+    var pendingAudioImportRole by remember { mutableStateOf(AudioRole.MUSIC) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(state.toastMessage) {
@@ -123,8 +130,8 @@ fun EditorScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            val fileName = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "Audio Track"
-            viewModel.addAudioTrack(fileName, AudioRole.MUSIC, uri.toString())
+            val role = pendingAudioImportRole
+            viewModel.importAudioTrack(uri, role, atPlayhead = role == AudioRole.SFX)
         }
     }
 
@@ -230,6 +237,34 @@ fun EditorScreen(
                             tint = if (state.isSyncing) PlayheadCyan else AudioEmerald
                         )
                     }
+                    Surface(
+                        color = MaterialTheme.colorScheme.primary,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { showRenderSheet = true }
+                            .testTag("editor_open_export_sheet_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.FileUpload,
+                                contentDescription = "Open render and export sheet",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Export",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                        }
+                    }
                 }
             )
         },
@@ -269,14 +304,45 @@ fun EditorScreen(
                             playheadMs = state.playheadMs,
                             zoomDpPerSec = state.timelineZoomDpPerSec,
                             selectedClipId = state.selectedClipId,
+                            selectedTrackId = state.selectedTrackId,
                             clipThumbnails = state.clipThumbnails,
                             onSeek = { viewModel.seekTo(it) },
                             onZoomChange = { viewModel.updateTimelineZoom(it) },
                             onSelectClip = { viewModel.selectClip(it) },
                             onTrimSelectedClip = { dStart, dEnd -> viewModel.trimSelectedClip(dStart, dEnd) },
-                            onSelectTrack = {
-                                viewModel.selectAudioTrack(it)
-                                viewModel.selectToolTab(EditorToolTab.AUDIO)
+                            onSetTrimRange = { startMs, endMs -> viewModel.setSelectedClipTrimRange(startMs, endMs) },
+                            onTrimToPlayhead = { trimStart -> viewModel.trimSelectedClipToPlayhead(trimStart) },
+                            onSplitAtPlayhead = { viewModel.splitClipAtPlayhead() },
+                            onReorderClip = { from, to -> viewModel.reorderClip(from, to) },
+                            onUpdateClipTransition = { id, type, dur, easing ->
+                                viewModel.updateClipTransition(id, type, dur, easing)
+                            },
+                            onApplyTransitionToAll = { type, dur, easing ->
+                                viewModel.applyTransitionToAllClips(type, dur, easing)
+                            },
+                            onPreviewTransition = { clipId -> viewModel.previewClipTransition(clipId) },
+                            onOpenAiClipGenerator = {
+                                viewModel.stopPlayback()
+                                aiHubSheetMode = AiMediaStudioMode.TEXT_TO_VIDEO
+                            },
+                            onSelectTrack = { viewModel.selectAudioTrack(it) },
+                            onAudioVolumeChange = { id, vol -> viewModel.updateAudioTrackVolume(id, vol) },
+                            onToggleTrackMute = { viewModel.toggleAudioTrackMute(it) },
+                            onToggleTrackSolo = { viewModel.toggleAudioTrackSolo(it) },
+                            onMoveAudioTrackOffset = { id, offset -> viewModel.moveAudioTrackOffset(id, offset) },
+                            onSnapAudioTrackToPlayhead = { viewModel.snapAudioTrackToPlayhead(it) },
+                            onDeleteAudioTrack = { viewModel.deleteAudioTrack(it) },
+                            onImportAudio = { role ->
+                                pendingAudioImportRole = role
+                                audioPicker.launch(arrayOf("audio/*"))
+                            },
+                            onOpenAiMusic = {
+                                viewModel.stopPlayback()
+                                aiHubSheetMode = AiMediaStudioMode.MUSIC_GEN
+                            },
+                            onAddAudioPreset = { preset -> viewModel.addStudioAudioPreset(preset) },
+                            onPrepareAudioPresetPreview = { preset, onReady ->
+                                viewModel.prepareStudioAudioPreviewPath(preset, onReady)
                             },
                             modifier = Modifier.weight(1f)
                         )
@@ -301,7 +367,19 @@ fun EditorScreen(
                             onImportClip = {
                                 clipPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
                             },
-                            onImportAudio = { audioPicker.launch(arrayOf("audio/*")) },
+                            onOpenAiClipGenerator = {
+                                viewModel.stopPlayback()
+                                aiHubSheetMode = AiMediaStudioMode.TEXT_TO_VIDEO
+                            },
+                            onOpenAiMusic = {
+                                viewModel.stopPlayback()
+                                aiHubSheetMode = AiMediaStudioMode.MUSIC_GEN
+                            },
+                            onImportAudio = {
+                                pendingAudioImportRole = AudioRole.MUSIC
+                                audioPicker.launch(arrayOf("audio/*"))
+                            },
+                            onOpenRenderSheet = { showRenderSheet = true },
                             onExportOfflineJson = { json ->
                                 pendingOfflineJson = json
                                 val safe = project.title.replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(28)
@@ -332,14 +410,45 @@ fun EditorScreen(
                         playheadMs = state.playheadMs,
                         zoomDpPerSec = state.timelineZoomDpPerSec,
                         selectedClipId = state.selectedClipId,
+                        selectedTrackId = state.selectedTrackId,
                         clipThumbnails = state.clipThumbnails,
                         onSeek = { viewModel.seekTo(it) },
                         onZoomChange = { viewModel.updateTimelineZoom(it) },
                         onSelectClip = { viewModel.selectClip(it) },
                         onTrimSelectedClip = { dStart, dEnd -> viewModel.trimSelectedClip(dStart, dEnd) },
-                        onSelectTrack = {
-                            viewModel.selectAudioTrack(it)
-                            viewModel.selectToolTab(EditorToolTab.AUDIO)
+                        onSetTrimRange = { startMs, endMs -> viewModel.setSelectedClipTrimRange(startMs, endMs) },
+                        onTrimToPlayhead = { trimStart -> viewModel.trimSelectedClipToPlayhead(trimStart) },
+                        onSplitAtPlayhead = { viewModel.splitClipAtPlayhead() },
+                        onReorderClip = { from, to -> viewModel.reorderClip(from, to) },
+                        onUpdateClipTransition = { id, type, dur, easing ->
+                            viewModel.updateClipTransition(id, type, dur, easing)
+                        },
+                        onApplyTransitionToAll = { type, dur, easing ->
+                            viewModel.applyTransitionToAllClips(type, dur, easing)
+                        },
+                        onPreviewTransition = { clipId -> viewModel.previewClipTransition(clipId) },
+                        onOpenAiClipGenerator = {
+                            viewModel.stopPlayback()
+                            aiHubSheetMode = AiMediaStudioMode.TEXT_TO_VIDEO
+                        },
+                        onSelectTrack = { viewModel.selectAudioTrack(it) },
+                        onAudioVolumeChange = { id, vol -> viewModel.updateAudioTrackVolume(id, vol) },
+                        onToggleTrackMute = { viewModel.toggleAudioTrackMute(it) },
+                        onToggleTrackSolo = { viewModel.toggleAudioTrackSolo(it) },
+                        onMoveAudioTrackOffset = { id, offset -> viewModel.moveAudioTrackOffset(id, offset) },
+                        onSnapAudioTrackToPlayhead = { viewModel.snapAudioTrackToPlayhead(it) },
+                        onDeleteAudioTrack = { viewModel.deleteAudioTrack(it) },
+                        onImportAudio = { role ->
+                            pendingAudioImportRole = role
+                            audioPicker.launch(arrayOf("audio/*"))
+                        },
+                        onOpenAiMusic = {
+                            viewModel.stopPlayback()
+                            aiHubSheetMode = AiMediaStudioMode.MUSIC_GEN
+                        },
+                        onAddAudioPreset = { preset -> viewModel.addStudioAudioPreset(preset) },
+                        onPrepareAudioPresetPreview = { preset, onReady ->
+                            viewModel.prepareStudioAudioPreviewPath(preset, onReady)
                         }
                     )
 
@@ -362,7 +471,19 @@ fun EditorScreen(
                             onImportClip = {
                                 clipPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
                             },
-                            onImportAudio = { audioPicker.launch(arrayOf("audio/*")) },
+                            onOpenAiClipGenerator = {
+                                viewModel.stopPlayback()
+                                aiHubSheetMode = AiMediaStudioMode.TEXT_TO_VIDEO
+                            },
+                            onOpenAiMusic = {
+                                viewModel.stopPlayback()
+                                aiHubSheetMode = AiMediaStudioMode.MUSIC_GEN
+                            },
+                            onImportAudio = {
+                                pendingAudioImportRole = AudioRole.MUSIC
+                                audioPicker.launch(arrayOf("audio/*"))
+                            },
+                            onOpenRenderSheet = { showRenderSheet = true },
                             onExportOfflineJson = { json ->
                                 pendingOfflineJson = json
                                 val safe = project.title.replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(28)
@@ -400,6 +521,24 @@ fun EditorScreen(
             }
         )
     }
+    if (showRenderSheet) {
+        RenderExportSheet(
+            project = project,
+            state = state,
+            batterySaverEnabled = settings.batterySaverEnabled,
+            viewModel = viewModel,
+            onDismiss = { showRenderSheet = false }
+        )
+    }
+    val activeSheetMode = aiHubSheetMode
+    if (activeSheetMode != null) {
+        AiCreativeHubSheet(
+            state = state,
+            viewModel = viewModel,
+            initialMode = activeSheetMode,
+            onDismiss = { aiHubSheetMode = null }
+        )
+    }
 }
 
 @Composable
@@ -411,16 +550,33 @@ private fun ActiveToolPanelHost(
     viewModel: StudioViewModel,
     onRecordClip: () -> Unit,
     onImportClip: () -> Unit,
+    onOpenAiClipGenerator: () -> Unit,
+    onOpenAiMusic: () -> Unit,
     onImportAudio: () -> Unit,
+    onOpenRenderSheet: () -> Unit,
     onExportOfflineJson: (String) -> Unit
 ) {
     when (activeTab) {
-        EditorToolTab.TIMELINE -> TimelineToolsPanel(project, state, viewModel, onRecordClip, onImportClip)
+        EditorToolTab.TIMELINE -> TimelineToolsPanel(
+            project = project,
+            state = state,
+            viewModel = viewModel,
+            onRecordClip = onRecordClip,
+            onImportClip = onImportClip,
+            onOpenAiClipGenerator = onOpenAiClipGenerator
+        )
         EditorToolTab.AI_STUDIO -> AiStudioPanel(project, state, viewModel)
         EditorToolTab.COLOR -> ColorGradingPanel(project, viewModel)
-        EditorToolTab.AUDIO -> AudioMixerPanel(project, state, viewModel, onImportAudio)
+        EditorToolTab.AUDIO -> AudioMixerPanel(project, state, viewModel, onImportAudio, onOpenAiMusic)
         EditorToolTab.CAPTIONS -> CaptionsPanel(project, viewModel)
-        EditorToolTab.EXPORT -> ExportBackupPanel(project, state, batterySaverEnabled, viewModel, onExportOfflineJson)
+        EditorToolTab.EXPORT -> ExportBackupPanel(
+            project = project,
+            state = state,
+            batterySaverEnabled = batterySaverEnabled,
+            viewModel = viewModel,
+            onOpenRenderSheet = onOpenRenderSheet,
+            onExportOfflineJson = onExportOfflineJson
+        )
     }
 }
 

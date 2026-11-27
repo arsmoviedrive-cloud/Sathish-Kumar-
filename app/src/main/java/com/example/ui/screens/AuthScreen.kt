@@ -33,12 +33,14 @@ import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.MovieCreation
+import androidx.compose.material.icons.filled.PersonOutline
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -72,7 +74,8 @@ import com.example.ui.theme.PlayheadCyan
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AuthScreen(
-    onAuthSuccess: () -> Unit
+    onAuthSuccess: () -> Unit,
+    onContinueAsGuest: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -300,8 +303,34 @@ fun AuthScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
+                OutlinedButton(
+                    onClick = onContinueAsGuest,
+                    enabled = !isLoading,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .testTag("continue_as_guest_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PersonOutline,
+                        contentDescription = null,
+                        tint = PlayheadCyan,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Continue as Guest",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFFE2E8F0)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
                 Text(
-                    text = "Syncs projects across devices via Firestore & enables Gemini AI editing",
+                    text = "Sign in with Google for cross-device cloud sync, or use Guest Mode for local-only editing on this device.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFF64748B)
                 )

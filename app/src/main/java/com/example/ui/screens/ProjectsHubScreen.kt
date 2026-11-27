@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.PersonOutline
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.SaveAlt
@@ -108,7 +110,9 @@ import com.example.data.model.ExportDestination
 import com.example.data.model.ExportRecord
 import com.example.data.model.VideoProject
 import com.example.data.model.formatDurationShort
+import com.example.firebase.onGoogleSignInClicked
 import com.example.firebase.signOut
+import com.example.ui.theme.AudioAmber
 import com.example.ui.theme.AudioEmerald
 import com.example.ui.theme.CaptionViolet
 import com.example.ui.theme.MonoBadgeStyle
@@ -131,6 +135,8 @@ private enum class HubSection(val label: String) {
 fun ProjectsHubScreen(
     viewModel: StudioViewModel,
     userEmail: String,
+    isGuestMode: Boolean,
+    onExitGuestMode: () -> Unit,
     onOpenEditor: (String) -> Unit,
     onOpenCamera: () -> Unit
 ) {
@@ -278,16 +284,29 @@ fun ProjectsHubScreen(
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
-                        // Sign Out
-                        IconButton(
-                            onClick = { signOut(credentialManager, scope) },
-                            modifier = Modifier.testTag("sign_out_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Logout,
-                                contentDescription = "Sign out",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        // Sign Out (or Sign In when in Guest Mode)
+                        if (isGuestMode) {
+                            IconButton(
+                                onClick = onExitGuestMode,
+                                modifier = Modifier.testTag("guest_exit_to_login_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Login,
+                                    contentDescription = "Sign in with Google",
+                                    tint = PlayheadCyan
+                                )
+                            }
+                        } else {
+                            IconButton(
+                                onClick = { signOut(credentialManager, scope) },
+                                modifier = Modifier.testTag("sign_out_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Logout,
+                                    contentDescription = "Sign out",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 )
@@ -365,9 +384,20 @@ fun ProjectsHubScreen(
                     when (selectedSection) {
                         HubSection.PROJECTS -> ProjectsTabContent(
                             projectsState = projectsState,
+                            isGuestMode = isGuestMode,
                             batterySaver = settings.batterySaverEnabled,
                             batteryPercent = editorState.batteryTelemetry.levelPercent,
                             themeLabel = settings.themeMode.label,
+                            onUpgradeToGoogleSignIn = {
+                                onGoogleSignInClicked(
+                                    context = context,
+                                    credentialManager = credentialManager,
+                                    onAuthSuccess = { /* AppRoot switches seamlessly */ },
+                                    onAuthError = { msg -> viewModel.showMessage(msg) },
+                                    scope = scope,
+                                    onAuthCancelled = {}
+                                )
+                            },
                             onOpenCamera = onOpenCamera,
                             onImportVideo = {
                                 videoPickerLauncher.launch(
@@ -400,6 +430,7 @@ fun ProjectsHubScreen(
 
                         HubSection.EXPORTS -> ExportsHistoryTabContent(
                             exportsState = exportsState,
+                            isGuestMode = isGuestMode,
                             onShareExport = { record ->
                                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                     type = if (record.localOutputUri.contains("video")) "video/mp4" else "text/plain"
@@ -437,9 +468,11 @@ fun ProjectsHubScreen(
 @Composable
 private fun ProjectsTabContent(
     projectsState: UiState<List<VideoProject>>,
+    isGuestMode: Boolean,
     batterySaver: Boolean,
     batteryPercent: Int,
     themeLabel: String,
+    onUpgradeToGoogleSignIn: () -> Unit,
     onOpenCamera: () -> Unit,
     onImportVideo: () -> Unit,
     onCreateDemoReel: () -> Unit,
@@ -451,6 +484,56 @@ private fun ProjectsTabContent(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         modifier = Modifier.fillMaxSize()
     ) {
+        if (isGuestMode) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, AudioAmber.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.PersonOutline,
+                                contentDescription = null,
+                                tint = AudioAmber,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Guest Mode • Local Device Storage",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = AudioAmber
+                            )
+                        }
+                        Text(
+                            text = "All editing, CameraX recording, 4K exports, and AI tools are unlocked locally. Sign in with Google anytime to sync projects across devices.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FilledTonalButton(
+                            onClick = onUpgradeToGoogleSignIn,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("guest_upgrade_sign_in_button")
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Login, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Sign in with Google for Cloud Sync")
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             StudioQuickLaunchBanner(
                 batterySaver = batterySaver,
@@ -469,7 +552,7 @@ private fun ProjectsTabContent(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Cloud-Synced Projects",
+                    text = if (isGuestMode) "Local Guest Projects" else "Cloud-Synced Projects",
                     style = MaterialTheme.typography.titleLarge
                 )
                 Row(
@@ -477,15 +560,15 @@ private fun ProjectsTabContent(
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.CloudDone,
+                        imageVector = if (isGuestMode) Icons.Filled.SdStorage else Icons.Filled.CloudDone,
                         contentDescription = null,
-                        tint = AudioEmerald,
+                        tint = if (isGuestMode) AudioAmber else AudioEmerald,
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "Instant Multi-Device",
+                        text = if (isGuestMode) "On-Device SQLite" else "Instant Multi-Device",
                         style = MaterialTheme.typography.labelMedium,
-                        color = AudioEmerald
+                        color = if (isGuestMode) AudioAmber else AudioEmerald
                     )
                 }
             }
@@ -931,6 +1014,7 @@ private fun OfflineVaultTabContent(
 @Composable
 private fun ExportsHistoryTabContent(
     exportsState: UiState<List<ExportRecord>>,
+    isGuestMode: Boolean,
     onShareExport: (ExportRecord) -> Unit,
     onDeleteExport: (String) -> Unit
 ) {
@@ -941,7 +1025,7 @@ private fun ExportsHistoryTabContent(
     ) {
         item {
             Text(
-                text = "Cloud Export & Social Share Log",
+                text = if (isGuestMode) "Local Export & Social Share Log" else "Cloud Export & Social Share Log",
                 style = MaterialTheme.typography.titleLarge
             )
         }

@@ -43,6 +43,23 @@ enum class CodecOption(val raw: String, val label: String) {
     }
 }
 
+enum class ExportFormatOption(
+    val raw: String,
+    val label: String,
+    val subtitle: String,
+    val extension: String,
+    val mimeType: String,
+    val sizeMultiplier: Double
+) {
+    MP4("MP4", "MP4", "Universal • Social & Web", "mp4", "video/mp4", 1.0),
+    MOV("MOV", "MOV", "QuickTime • Studio Master", "mov", "video/quicktime", 1.18);
+
+    companion object {
+        fun fromRaw(raw: String?): ExportFormatOption =
+            entries.firstOrNull { it.raw == raw } ?: MP4
+    }
+}
+
 enum class ColorPreset(
     val raw: String,
     val label: String,
@@ -80,15 +97,38 @@ enum class CaptionStyle(val raw: String, val label: String) {
     }
 }
 
-enum class TransitionType(val raw: String, val label: String) {
-    CUT("CUT", "Hard Cut"),
-    CROSS_DISSOLVE("CROSS_DISSOLVE", "Cross Dissolve"),
-    WHIP_PAN("WHIP_PAN", "Whip Pan"),
-    DIP_BLACK("DIP_BLACK", "Dip to Black");
+enum class TransitionType(
+    val raw: String,
+    val label: String,
+    val shortCode: String,
+    val description: String
+) {
+    CUT("CUT", "Hard Cut", "CT", "Instant frame cut"),
+    CROSS_FADE("CROSS_FADE", "Cross-Fade", "CF", "Smooth opacity blend"),
+    CROSS_DISSOLVE("CROSS_DISSOLVE", "Dissolve", "DS", "Soft filmic lap dissolve"),
+    WHIP_PAN("WHIP_PAN", "Whip Pan", "WP", "High-energy directional sweep"),
+    DIP_BLACK("DIP_BLACK", "Dip Black", "DB", "Fade out through pure black"),
+    DIP_WHITE("DIP_WHITE", "Flash White", "DW", "Luminous white flash bloom"),
+    ZOOM_IN("ZOOM_IN", "Zoom Punch", "ZM", "Dynamic kinetic push-in"),
+    SLIDE_LEFT("SLIDE_LEFT", "Slide Wipe", "SL", "Horizontal directional push"),
+    GLITCH("GLITCH", "RGB Glitch", "GL", "Chromatic cyber pulse cut"),
+    BLUR_DISSOLVE("BLUR_DISSOLVE", "Blur Morph", "BL", "Soft optical defocus blend"),
+    IRIS_WIPE("IRIS_WIPE", "Iris Wipe", "IR", "Circular cinema aperture wipe");
 
     companion object {
         fun fromRaw(raw: String?): TransitionType =
             entries.firstOrNull { it.raw == raw } ?: CUT
+    }
+}
+
+enum class TransitionEasing(val raw: String, val label: String) {
+    LINEAR("LINEAR", "Linear"),
+    EASE_IN_OUT("EASE_IN_OUT", "Smooth Ease"),
+    SPRING("SPRING", "Punchy Spring");
+
+    companion object {
+        fun fromRaw(raw: String?): TransitionEasing =
+            entries.firstOrNull { it.raw == raw } ?: EASE_IN_OUT
     }
 }
 
@@ -129,6 +169,8 @@ data class TimelineClip(
     val volume: Double = 1.0,
     val muted: Boolean = false,
     val transition: String = TransitionType.CUT.raw,
+    val transitionDurationMs: Long = 500L,
+    val transitionEasing: String = TransitionEasing.EASE_IN_OUT.raw,
     val sampleScene: String = "COASTAL_HIGHWAY"
 ) {
     val effectiveDurationMs: Long
@@ -146,6 +188,8 @@ data class TimelineClip(
         "volume" to volume.coerceIn(0.0, 2.0),
         "muted" to muted,
         "transition" to TransitionType.fromRaw(transition).raw,
+        "transitionDurationMs" to transitionDurationMs.coerceIn(150L, 1500L),
+        "transitionEasing" to TransitionEasing.fromRaw(transitionEasing).raw,
         "sampleScene" to sampleScene.take(40)
     )
 
@@ -161,6 +205,8 @@ data class TimelineClip(
         put("volume", volume)
         put("muted", muted)
         put("transition", transition)
+        put("transitionDurationMs", transitionDurationMs)
+        put("transitionEasing", transitionEasing)
         put("sampleScene", sampleScene)
     }
 
@@ -177,6 +223,8 @@ data class TimelineClip(
             volume = (map["volume"] as? Number)?.toDouble()?.coerceIn(0.0, 2.0) ?: 1.0,
             muted = (map["muted"] as? Boolean) ?: false,
             transition = TransitionType.fromRaw(map["transition"] as? String).raw,
+            transitionDurationMs = (map["transitionDurationMs"] as? Number)?.toLong()?.coerceIn(150L, 1500L) ?: 500L,
+            transitionEasing = TransitionEasing.fromRaw(map["transitionEasing"] as? String).raw,
             sampleScene = (map["sampleScene"] as? String).orEmpty().ifBlank { "COASTAL_HIGHWAY" }
         )
 
@@ -192,6 +240,8 @@ data class TimelineClip(
             volume = obj.optDouble("volume", 1.0).coerceIn(0.0, 2.0),
             muted = obj.optBoolean("muted", false),
             transition = TransitionType.fromRaw(obj.optString("transition")).raw,
+            transitionDurationMs = obj.optLong("transitionDurationMs", 500L).coerceIn(150L, 1500L),
+            transitionEasing = TransitionEasing.fromRaw(obj.optString("transitionEasing")).raw,
             sampleScene = obj.optString("sampleScene", "COASTAL_HIGHWAY")
         )
     }

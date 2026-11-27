@@ -18,15 +18,20 @@ import com.example.data.model.CaptionStyle
 import com.example.data.model.CodecOption
 import com.example.data.model.ColorPreset
 import com.example.data.model.ExportDestination
+import com.example.data.model.ExportFormatOption
 import com.example.data.model.ExportRecord
 import com.example.data.model.ResolutionOption
 import com.example.data.model.TimelineClip
+import com.example.data.model.TransitionEasing
 import com.example.data.model.TransitionType
 import com.example.data.model.VideoProject
 import com.example.data.repository.AiVideoAssistantRepository
+import com.example.data.repository.MusicModelOption
 import com.example.data.repository.ProjectRepository
+import com.example.data.repository.VideoGenAspectRatio
 import com.example.media.BatteryTelemetry
 import com.example.media.ExportProgressState
+import com.example.media.StudioAudioPreset
 import com.example.media.VideoMediaEngine
 import com.example.ui.theme.StudioThemeMode
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -62,6 +67,54 @@ sealed interface AiTaskState {
     data class Error(val message: String) : AiTaskState
 }
 
+sealed interface AiClipGenState {
+    data object Idle : AiClipGenState
+    data class Loading(val stage: String) : AiClipGenState
+    data class Success(val clipId: String, val title: String, val bitmap: Bitmap) : AiClipGenState
+    data class Error(val message: String) : AiClipGenState
+}
+
+sealed interface AiVideoGenState {
+    data object Idle : AiVideoGenState
+    data class Loading(val stage: String) : AiVideoGenState
+    data class Success(
+        val clipId: String,
+        val title: String,
+        val videoUri: String?,
+        val previewBitmap: Bitmap?,
+        val durationMs: Long,
+        val aspectRatio: VideoGenAspectRatio,
+        val notes: String,
+        val modelUsed: String
+    ) : AiVideoGenState
+    data class Error(val message: String) : AiVideoGenState
+}
+
+sealed interface AiImageStudioState {
+    data object Idle : AiImageStudioState
+    data class Loading(val stage: String) : AiImageStudioState
+    data class Success(
+        val bitmap: Bitmap,
+        val promptUsed: String,
+        val isEdit: Boolean
+    ) : AiImageStudioState
+    data class Error(val message: String) : AiImageStudioState
+}
+
+sealed interface AiMusicGenState {
+    data object Idle : AiMusicGenState
+    data class Loading(val stage: String) : AiMusicGenState
+    data class Success(
+        val trackId: String,
+        val title: String,
+        val localAudioPath: String,
+        val durationMs: Long,
+        val lyricsOrNotes: String,
+        val modelUsed: String
+    ) : AiMusicGenState
+    data class Error(val message: String) : AiMusicGenState
+}
+
 enum class EditorToolTab(val label: String) {
     TIMELINE("Timeline"),
     AI_STUDIO("AI Tools"),
@@ -87,6 +140,10 @@ data class EditorUiState(
     val canRedo: Boolean = false,
     val clipThumbnails: Map<String, List<Bitmap>> = emptyMap(),
     val aiTaskState: AiTaskState = AiTaskState.Idle,
+    val aiClipGenState: AiClipGenState = AiClipGenState.Idle,
+    val aiVideoGenState: AiVideoGenState = AiVideoGenState.Idle,
+    val aiImageStudioState: AiImageStudioState = AiImageStudioState.Idle,
+    val aiMusicGenState: AiMusicGenState = AiMusicGenState.Idle,
     val exportState: ExportProgressState? = null,
     val isExporting: Boolean = false,
     val batteryTelemetry: BatteryTelemetry = BatteryTelemetry(85, false, 60, 4),
@@ -99,7 +156,8 @@ class StudioViewModel(
     private val preferences: StudioPreferences,
     private val mediaEngine: VideoMediaEngine,
     val currentUserId: String,
-    private val userDisplayName: String
+    private val userDisplayName: String,
+    val isGuestMode: Boolean = false
 ) : ViewModel() {
 
     val localSettings: StateFlow<LocalStudioSettings> = preferences.settingsFlow
@@ -134,7 +192,9 @@ class StudioViewModel(
     val localBackups: StateFlow<List<ProjectBackupEntity>> = projectRepository.observeLocalBackups(currentUserId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), emptyList())
 
-    private val _editorState = MutableStateFlow(EditorUiState())
+    private val _editorState = MutableStateFlow(
+        EditorUiState(syncStatusLabel = if (isGuestMode) "Saved Locally" else "Cloud Synced")
+    )
     val editorState: StateFlow<EditorUiState> = _editorState.asStateFlow()
 
     private val undoStack = ArrayDeque<VideoProject>()
@@ -305,9 +365,13 @@ class StudioViewModel(
                 selectedTrackId = tracks.firstOrNull()?.trackId,
                 activeToolTab = EditorToolTab.TIMELINE,
                 aiTaskState = AiTaskState.Idle,
+                aiClipGenState = AiClipGenState.Idle,
+                aiVideoGenState = AiVideoGenState.Idle,
+                aiImageStudioState = AiImageStudioState.Idle,
+                aiMusicGenState = AiMusicGenState.Idle,
                 exportState = null,
                 isExporting = false,
-                syncStatusLabel = "Cloud Synced",
+                syncStatusLabel = if (isGuestMode) "Saved Locally" else "Cloud Synced",
                 canUndo = false,
                 canRedo = false,
                 clipThumbnails = emptyMap()
@@ -323,7 +387,7 @@ class StudioViewModel(
                 if (_editorState.value.project?.id == projectId) {
                     _editorState.update { it.copy(project = null) }
                 }
-                showMessage("Project deleted from cloud.")
+                showMessage(if (isGuestMode) "Project deleted from device." else "Project deleted from cloud.")
             }.onFailure { err ->
                 showMessage("Delete failed: ${err.localizedMessage ?: "Unknown error"}")
             }
@@ -449,7 +513,7 @@ class StudioViewModel(
                 playheadMs = it.playheadMs.coerceIn(0L, updated.totalDurationMs.coerceAtLeast(0L)),
                 canUndo = undoStack.isNotEmpty(),
                 canRedo = redoStack.isNotEmpty(),
-                syncStatusLabel = "Syncing..."
+                syncStatusLabel = if (isGuestMode) "Saving locally..." else "Syncing..."
             )
         }
         scheduleCloudSync(updated)
@@ -466,7 +530,11 @@ class StudioViewModel(
             _editorState.update {
                 it.copy(
                     isSyncing = false,
-                    syncStatusLabel = if (result.isSuccess) "Cloud Synced" else "Offline Cached"
+                    syncStatusLabel = when {
+                        isGuestMode -> if (result.isSuccess) "Saved Locally" else "Save Pending"
+                        result.isSuccess -> "Cloud Synced"
+                        else -> "Offline Cached"
+                    }
                 )
             }
         }
@@ -476,15 +544,26 @@ class StudioViewModel(
         val project = _editorState.value.project ?: return
         if (project.id.isBlank()) return
         viewModelScope.launch {
-            _editorState.update { it.copy(isSyncing = true, syncStatusLabel = "Syncing...") }
+            _editorState.update {
+                it.copy(
+                    isSyncing = true,
+                    syncStatusLabel = if (isGuestMode) "Saving locally..." else "Syncing..."
+                )
+            }
             val result = projectRepository.updateProject(project)
             _editorState.update {
                 it.copy(
                     isSyncing = false,
-                    syncStatusLabel = if (result.isSuccess) "Cloud Synced" else "Sync Pending"
+                    syncStatusLabel = when {
+                        isGuestMode -> if (result.isSuccess) "Saved Locally" else "Save Pending"
+                        result.isSuccess -> "Cloud Synced"
+                        else -> "Sync Pending"
+                    }
                 )
             }
-            if (result.isSuccess) {
+            if (isGuestMode) {
+                showMessage("Saved locally on this device. Sign in with Google to sync across devices.")
+            } else if (result.isSuccess) {
                 showMessage("Project synced to cloud across all devices.")
             } else {
                 showMessage("Sync queued offline: ${result.exceptionOrNull()?.localizedMessage ?: "Check connection"}")
@@ -616,12 +695,67 @@ class StudioViewModel(
             val updated = proj.typedClips().map { clip ->
                 if (clip.clipId != selectedId) clip
                 else {
-                    val newStart = (clip.trimStartMs + deltaStartMs).coerceIn(0L, clip.trimEndMs - 500L)
+                    val newStart = (clip.trimStartMs + deltaStartMs).coerceIn(0L, (clip.trimEndMs - 500L).coerceAtLeast(0L))
                     val newEnd = (clip.trimEndMs + deltaEndMs).coerceAtLeast(newStart + 500L)
                     clip.copy(trimStartMs = newStart, trimEndMs = newEnd)
                 }
             }
             proj.withTypedContent(newClips = updated)
+        }
+    }
+
+    fun setSelectedClipTrimRange(trimStartMs: Long, trimEndMs: Long) {
+        val selectedId = _editorState.value.selectedClipId ?: return
+        applyProjectEdit(recordUndo = false) { proj ->
+            val updated = proj.typedClips().map { clip ->
+                if (clip.clipId != selectedId) clip
+                else {
+                    val safeStart = trimStartMs.coerceAtLeast(0L)
+                    val safeEnd = trimEndMs.coerceAtLeast(safeStart + 500L)
+                    clip.copy(trimStartMs = safeStart, trimEndMs = safeEnd)
+                }
+            }
+            proj.withTypedContent(newClips = updated)
+        }
+    }
+
+    fun trimSelectedClipToPlayhead(trimStart: Boolean) {
+        val proj = _editorState.value.project ?: return
+        val selectedId = _editorState.value.selectedClipId ?: return
+        val playhead = _editorState.value.playheadMs
+        val target = proj.typedClips().firstOrNull { it.clipId == selectedId } ?: return
+        if (playhead <= target.startMs + 100L || playhead >= target.endMs - 100L) {
+            showMessage("Move the playhead inside '${target.label}' to trim at playhead.")
+            return
+        }
+        val localSourceOffset = ((playhead - target.startMs) * target.speed).toLong()
+        val cutSourceMs = target.trimStartMs + localSourceOffset
+        if (trimStart) {
+            if (target.trimEndMs - cutSourceMs < 500L) {
+                showMessage("Clip must remain at least 0.5s long.")
+                return
+            }
+            applyProjectEdit { currentProj ->
+                val updated = currentProj.typedClips().map { clip ->
+                    if (clip.clipId == selectedId) clip.copy(trimStartMs = cutSourceMs) else clip
+                }
+                currentProj.withTypedContent(newClips = updated)
+            }
+            val updatedClip = _editorState.value.project?.typedClips()?.firstOrNull { it.clipId == selectedId }
+            if (updatedClip != null) seekTo(updatedClip.startMs)
+            showMessage("Trimmed In point of '${target.label}' to playhead.")
+        } else {
+            if (cutSourceMs - target.trimStartMs < 500L) {
+                showMessage("Clip must remain at least 0.5s long.")
+                return
+            }
+            applyProjectEdit { currentProj ->
+                val updated = currentProj.typedClips().map { clip ->
+                    if (clip.clipId == selectedId) clip.copy(trimEndMs = cutSourceMs) else clip
+                }
+                currentProj.withTypedContent(newClips = updated)
+            }
+            showMessage("Trimmed Out point of '${target.label}' to playhead.")
         }
     }
 
@@ -637,12 +771,62 @@ class StudioViewModel(
 
     fun updateSelectedClipTransition(transition: TransitionType) {
         val selectedId = _editorState.value.selectedClipId ?: return
+        val existing = _editorState.value.project?.typedClips()?.firstOrNull { it.clipId == selectedId }
+        updateClipTransition(
+            clipId = selectedId,
+            transition = transition,
+            durationMs = existing?.transitionDurationMs ?: 500L,
+            easing = TransitionEasing.fromRaw(existing?.transitionEasing)
+        )
+    }
+
+    fun updateClipTransition(
+        clipId: String,
+        transition: TransitionType,
+        durationMs: Long,
+        easing: TransitionEasing
+    ) {
+        val clampedDur = durationMs.coerceIn(150L, 1500L)
         applyProjectEdit { proj ->
             val updated = proj.typedClips().map { clip ->
-                if (clip.clipId == selectedId) clip.copy(transition = transition.raw) else clip
+                if (clip.clipId == clipId) {
+                    clip.copy(
+                        transition = transition.raw,
+                        transitionDurationMs = clampedDur,
+                        transitionEasing = easing.raw
+                    )
+                } else clip
             }
             proj.withTypedContent(newClips = updated)
         }
+    }
+
+    fun applyTransitionToAllClips(
+        transition: TransitionType,
+        durationMs: Long,
+        easing: TransitionEasing
+    ) {
+        val clampedDur = durationMs.coerceIn(150L, 1500L)
+        applyProjectEdit { proj ->
+            val updated = proj.typedClips().map { clip ->
+                clip.copy(
+                    transition = transition.raw,
+                    transitionDurationMs = clampedDur,
+                    transitionEasing = easing.raw
+                )
+            }
+            proj.withTypedContent(newClips = updated)
+        }
+        showMessage("Applied ${transition.label} (${clampedDur}ms) to all clip seams.")
+    }
+
+    fun previewClipTransition(clipId: String) {
+        val clip = _editorState.value.project?.typedClips()?.firstOrNull { it.clipId == clipId } ?: return
+        val leadIn = (clip.transitionDurationMs + 550L).coerceAtMost((clip.endMs - clip.startMs).coerceAtLeast(300L))
+        val seekTarget = (clip.endMs - leadIn).coerceAtLeast(0L)
+        stopPlayback()
+        seekTo(seekTarget)
+        startPlayback()
     }
 
     fun duplicateSelectedClip() {
@@ -658,6 +842,38 @@ class StudioViewModel(
             val list = clips.toMutableList().apply { add(idx + 1, copyClip) }
             proj.withTypedContent(newClips = list)
         }
+    }
+
+    fun reorderClip(fromIndex: Int, toIndex: Int) {
+        val currentClips = _editorState.value.project?.typedClips().orEmpty()
+        if (fromIndex !in currentClips.indices || toIndex !in currentClips.indices || fromIndex == toIndex) {
+            return
+        }
+        val movedClip = currentClips[fromIndex]
+        applyProjectEdit { proj ->
+            val mutable = proj.typedClips().toMutableList()
+            if (fromIndex !in mutable.indices || toIndex !in mutable.indices) return@applyProjectEdit proj
+            val item = mutable.removeAt(fromIndex)
+            mutable.add(toIndex, item)
+            proj.withTypedContent(newClips = mutable)
+        }
+        val updatedClip = _editorState.value.project?.typedClips()?.firstOrNull { it.clipId == movedClip.clipId }
+        _editorState.update { state ->
+            state.copy(
+                selectedClipId = movedClip.clipId,
+                playheadMs = updatedClip?.startMs ?: state.playheadMs
+            )
+        }
+        showMessage("Moved '${movedClip.label}' to slot #${toIndex + 1}.")
+    }
+
+    fun moveSelectedClipBy(delta: Int) {
+        val selectedId = _editorState.value.selectedClipId ?: return
+        val clips = _editorState.value.project?.typedClips().orEmpty()
+        val currentIndex = clips.indexOfFirst { it.clipId == selectedId }
+        if (currentIndex == -1) return
+        val targetIndex = (currentIndex + delta).coerceIn(0, clips.lastIndex)
+        reorderClip(currentIndex, targetIndex)
     }
 
     fun deleteSelectedClip() {
@@ -710,21 +926,78 @@ class StudioViewModel(
         }
     }
 
-    // --- Multi-Track Audio Mixing ---
-    fun addAudioTrack(name: String, role: AudioRole, sourceUri: String = "") {
-        val duration = (_editorState.value.project?.totalDurationMs ?: 12000L).coerceAtLeast(4000L)
+    // --- Multi-Track Audio Mixing & Timeline Audio Layer ---
+    fun addAudioTrack(name: String, role: AudioRole, sourceUri: String = "", offsetMs: Long = 0L, durationOverrideMs: Long? = null) {
+        val currentCount = _editorState.value.project?.typedAudioTracks()?.size ?: 0
+        if (currentCount >= 12) {
+            showMessage("Audio layer supports up to 12 tracks per project.")
+            return
+        }
+        val projectDuration = (_editorState.value.project?.totalDurationMs ?: 12000L).coerceAtLeast(4000L)
+        val trackDuration = (durationOverrideMs ?: if (role == AudioRole.SFX) 1800L else projectDuration).coerceAtLeast(500L)
+        val safeOffset = offsetMs.coerceIn(0L, (projectDuration - 300L).coerceAtLeast(0L))
         val track = AudioTrack(
             name = name.take(50).ifBlank { role.label },
             role = role.raw,
             sourceUri = sourceUri,
-            volume = if (role == AudioRole.MUSIC) 0.45 else 0.9,
+            volume = when (role) {
+                AudioRole.MUSIC -> 0.55
+                AudioRole.SFX -> 0.88
+                else -> 0.90
+            },
             fadeInMs = if (role == AudioRole.MUSIC) 600L else 0L,
-            fadeOutMs = 800L,
-            durationMs = duration
+            fadeOutMs = if (role == AudioRole.MUSIC) 800L else 150L,
+            offsetMs = safeOffset,
+            durationMs = trackDuration
         )
         applyProjectEdit { proj -> proj.withTypedContent(newAudioTracks = proj.typedAudioTracks() + track) }
         _editorState.update { it.copy(selectedTrackId = track.trackId) }
-        showMessage("Added ${track.name} to mixer.")
+        showMessage("Added '${track.name}' to timeline audio layer.")
+    }
+
+    fun importAudioTrack(uri: Uri, role: AudioRole, atPlayhead: Boolean = role == AudioRole.SFX) {
+        val currentCount = _editorState.value.project?.typedAudioTracks()?.size ?: 0
+        if (currentCount >= 12) {
+            showMessage("Audio layer supports up to 12 tracks per project.")
+            return
+        }
+        viewModelScope.launch {
+            val meta = mediaEngine.inspectAudioUri(uri)
+            val startOffset = if (atPlayhead) _editorState.value.playheadMs else 0L
+            addAudioTrack(
+                name = meta.displayName,
+                role = role,
+                sourceUri = meta.uriString,
+                offsetMs = startOffset,
+                durationOverrideMs = meta.durationMs
+            )
+        }
+    }
+
+    fun addStudioAudioPreset(preset: StudioAudioPreset, atPlayhead: Boolean = preset.role == AudioRole.SFX) {
+        val currentCount = _editorState.value.project?.typedAudioTracks()?.size ?: 0
+        if (currentCount >= 12) {
+            showMessage("Audio layer supports up to 12 tracks per project.")
+            return
+        }
+        viewModelScope.launch {
+            val filePath = mediaEngine.ensureStudioAudioPreset(preset)
+            val startOffset = if (atPlayhead) _editorState.value.playheadMs else 0L
+            addAudioTrack(
+                name = preset.name,
+                role = preset.role,
+                sourceUri = "local_audio://$filePath",
+                offsetMs = startOffset,
+                durationOverrideMs = preset.durationMs
+            )
+        }
+    }
+
+    fun prepareStudioAudioPreviewPath(preset: StudioAudioPreset, onReady: (String) -> Unit) {
+        viewModelScope.launch {
+            val path = mediaEngine.ensureStudioAudioPreset(preset)
+            onReady(path)
+        }
     }
 
     fun updateAudioTrack(trackId: String, updater: (AudioTrack) -> AudioTrack) {
@@ -734,9 +1007,56 @@ class StudioViewModel(
         }
     }
 
+    fun updateAudioTrackVolume(trackId: String, volume: Double) {
+        val clamped = volume.coerceIn(0.0, 2.0)
+        updateAudioTrack(trackId) { it.copy(volume = clamped) }
+    }
+
+    fun moveAudioTrackOffset(trackId: String, offsetMs: Long) {
+        val maxOffset = ((_editorState.value.project?.totalDurationMs ?: 18000L) - 300L).coerceAtLeast(0L)
+        val clamped = offsetMs.coerceIn(0L, maxOffset)
+        updateAudioTrack(trackId) { it.copy(offsetMs = clamped) }
+    }
+
+    fun snapAudioTrackToPlayhead(trackId: String) {
+        val target = _editorState.value.playheadMs
+        applyProjectEdit { proj ->
+            val maxOffset = (proj.totalDurationMs - 300L).coerceAtLeast(0L)
+            val updated = proj.typedAudioTracks().map {
+                if (it.trackId == trackId) it.copy(offsetMs = target.coerceIn(0L, maxOffset)) else it
+            }
+            proj.withTypedContent(newAudioTracks = updated)
+        }
+        showMessage("Aligned audio track start to playhead.")
+    }
+
+    fun toggleAudioTrackMute(trackId: String) {
+        applyProjectEdit { proj ->
+            val updated = proj.typedAudioTracks().map {
+                if (it.trackId == trackId) it.copy(muted = !it.muted) else it
+            }
+            proj.withTypedContent(newAudioTracks = updated)
+        }
+    }
+
+    fun toggleAudioTrackSolo(trackId: String) {
+        applyProjectEdit { proj ->
+            val updated = proj.typedAudioTracks().map {
+                if (it.trackId == trackId) it.copy(solo = !it.solo) else it
+            }
+            proj.withTypedContent(newAudioTracks = updated)
+        }
+    }
+
     fun deleteAudioTrack(trackId: String) {
         applyProjectEdit { proj ->
             proj.withTypedContent(newAudioTracks = proj.typedAudioTracks().filterNot { it.trackId == trackId })
+        }
+        _editorState.update { state ->
+            val nextSelected = if (state.selectedTrackId == trackId) {
+                state.project?.typedAudioTracks()?.firstOrNull()?.trackId
+            } else state.selectedTrackId
+            state.copy(selectedTrackId = nextSelected)
         }
     }
 
@@ -920,39 +1240,432 @@ class StudioViewModel(
         _editorState.update { it.copy(aiTaskState = AiTaskState.Idle) }
     }
 
+    fun resetAiClipGenState() {
+        _editorState.update { it.copy(aiClipGenState = AiClipGenState.Idle) }
+    }
+
+    fun generateAiVideoClip(
+        prompt: String,
+        visualStyle: String,
+        durationSec: Int,
+        cameraMotion: String
+    ) {
+        val project = _editorState.value.project ?: return
+        val cleanPrompt = prompt.trim()
+        if (cleanPrompt.isBlank()) {
+            _editorState.update {
+                it.copy(aiClipGenState = AiClipGenState.Error("Describe the video scene you want Gemini AI to create."))
+            }
+            return
+        }
+        viewModelScope.launch {
+            _editorState.update {
+                it.copy(
+                    aiClipGenState = AiClipGenState.Loading(
+                        "Directing scene & rendering AI keyframe with Gemini (may take 30–60s)..."
+                    )
+                )
+            }
+            val result = aiRepository.generateAiVideoClip(
+                userPrompt = cleanPrompt,
+                visualStyle = visualStyle,
+                aspectRatio = project.aspectRatio,
+                cameraMotion = cameraMotion
+            )
+            result.onSuccess { generated ->
+                val clipId = "clip_ai_${UUID.randomUUID().toString().take(8)}"
+                val savedUri = mediaEngine.saveAiClipKeyframe(clipId, generated.keyframeBitmap)
+                val safeDurationMs = (durationSec.coerceIn(2, 12) * 1000L)
+                val newClip = TimelineClip(
+                    clipId = clipId,
+                    label = generated.title,
+                    sourceUri = savedUri,
+                    startMs = 0L,
+                    endMs = safeDurationMs,
+                    trimStartMs = 0L,
+                    trimEndMs = safeDurationMs,
+                    speed = 1.0,
+                    transition = generated.suggestedTransition.raw,
+                    transitionDurationMs = 550L,
+                    transitionEasing = TransitionEasing.EASE_IN_OUT.raw,
+                    sampleScene = cameraMotion
+                )
+
+                var insertedStartMs = 0L
+                applyProjectEdit { proj ->
+                    val updatedClips = proj.typedClips() + newClip
+                    val updatedProject = proj.withTypedContent(newClips = updatedClips)
+                    val placedClip = updatedProject.typedClips().firstOrNull { it.clipId == clipId }
+                    insertedStartMs = placedClip?.startMs ?: 0L
+                    if (generated.suggestedCaption.isNotBlank() && placedClip != null) {
+                        val cue = CaptionCue(
+                            captionId = "cap_ai_${UUID.randomUUID().toString().take(8)}",
+                            startMs = placedClip.startMs + 250L,
+                            endMs = (placedClip.endMs - 250L).coerceAtLeast(placedClip.startMs + 800L),
+                            text = generated.suggestedCaption,
+                            emphasisWord = generated.emphasisWord,
+                            speaker = "AI Narrator"
+                        )
+                        updatedProject.withTypedContent(newCaptions = updatedProject.typedCaptions() + cue)
+                    } else {
+                        updatedProject
+                    }
+                }
+                _editorState.update { state ->
+                    state.copy(
+                        selectedClipId = clipId,
+                        playheadMs = insertedStartMs,
+                        clipThumbnails = state.clipThumbnails + (clipId to listOf(generated.keyframeBitmap)),
+                        aiClipGenState = AiClipGenState.Success(
+                            clipId = clipId,
+                            title = generated.title,
+                            bitmap = generated.keyframeBitmap
+                        )
+                    )
+                }
+                showMessage("Added AI clip '${generated.title}' to timeline!")
+            }.onFailure { err ->
+                _editorState.update {
+                    it.copy(
+                        aiClipGenState = AiClipGenState.Error(
+                            err.message ?: "Could not generate AI video clip. Please try again."
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    // --- Generative Media Suite (Text->Video, Image->Video, Image Create/Edit, Lyria Music) ---
+    fun decodePhotoBitmap(uri: Uri, onResult: (Bitmap?) -> Unit) {
+        viewModelScope.launch {
+            onResult(mediaEngine.loadScaledBitmapFromUri(uri))
+        }
+    }
+
+    fun resetAiVideoGenState() {
+        _editorState.update { it.copy(aiVideoGenState = AiVideoGenState.Idle) }
+    }
+
+    fun resetAiImageStudioState() {
+        _editorState.update { it.copy(aiImageStudioState = AiImageStudioState.Idle) }
+    }
+
+    fun resetAiMusicGenState() {
+        _editorState.update { it.copy(aiMusicGenState = AiMusicGenState.Idle) }
+    }
+
+    fun generateVideoFromText(
+        prompt: String,
+        aspectRatio: VideoGenAspectRatio,
+        visualStyle: String
+    ) {
+        viewModelScope.launch {
+            _editorState.update {
+                it.copy(
+                    aiVideoGenState = AiVideoGenState.Loading(
+                        "Generating ${aspectRatio.raw} video with gemini-omni-1.2-flash (may take 30–120s)..."
+                    )
+                )
+            }
+            val result = aiRepository.generateVideoFromText(prompt, aspectRatio, visualStyle)
+            handleGeneratedVideoResult(result)
+        }
+    }
+
+    fun animateBitmapToVideo(
+        sourceBitmap: Bitmap,
+        motionPrompt: String,
+        aspectRatio: VideoGenAspectRatio
+    ) {
+        viewModelScope.launch {
+            _editorState.update {
+                it.copy(
+                    aiVideoGenState = AiVideoGenState.Loading(
+                        "Animating photo into ${aspectRatio.raw} video with gemini-omni-1.2-flash (may take 30–120s)..."
+                    )
+                )
+            }
+            val result = aiRepository.animateImageToVideo(sourceBitmap, motionPrompt, aspectRatio)
+            handleGeneratedVideoResult(result)
+        }
+    }
+
+    private suspend fun handleGeneratedVideoResult(
+        result: Result<com.example.data.repository.AiGeneratedVideoResult>
+    ) {
+        result.onSuccess { generated ->
+            val clipId = "clip_vid_${UUID.randomUUID().toString().take(8)}"
+            var savedVideoUri: String? = generated.remoteFileUri
+            var durationMs = 6000L
+            var previewBmp = generated.previewBitmap
+
+            if (generated.videoBytes != null && generated.videoBytes.isNotEmpty()) {
+                val (uriStr, dur) = mediaEngine.saveAiVideoFile(clipId, generated.videoBytes, generated.mimeType)
+                savedVideoUri = uriStr
+                durationMs = dur
+                if (previewBmp == null) {
+                    previewBmp = mediaEngine.extractKeyframes(uriStr, count = 1, batterySaverEnabled = true).firstOrNull()
+                }
+            } else if (previewBmp != null && savedVideoUri.isNullOrBlank()) {
+                savedVideoUri = mediaEngine.saveAiClipKeyframe(clipId, previewBmp)
+            }
+
+            _editorState.update {
+                it.copy(
+                    aiVideoGenState = AiVideoGenState.Success(
+                        clipId = clipId,
+                        title = generated.title,
+                        videoUri = savedVideoUri,
+                        previewBitmap = previewBmp,
+                        durationMs = durationMs,
+                        aspectRatio = generated.aspectRatio,
+                        notes = generated.notes,
+                        modelUsed = generated.modelUsed
+                    )
+                )
+            }
+        }.onFailure { err ->
+            _editorState.update {
+                it.copy(
+                    aiVideoGenState = AiVideoGenState.Error(
+                        err.message ?: "Video generation failed."
+                    )
+                )
+            }
+        }
+    }
+
+    fun addGeneratedVideoToTimeline(result: AiVideoGenState.Success) {
+        val targetAspect = if (result.aspectRatio == VideoGenAspectRatio.PORTRAIT_9_16) {
+            AspectRatioOption.VERTICAL_9_16
+        } else {
+            AspectRatioOption.WIDE_16_9
+        }
+        val newClip = TimelineClip(
+            clipId = result.clipId,
+            label = result.title,
+            sourceUri = result.videoUri.orEmpty(),
+            startMs = 0L,
+            endMs = result.durationMs,
+            trimStartMs = 0L,
+            trimEndMs = result.durationMs,
+            speed = 1.0,
+            transition = TransitionType.CROSS_DISSOLVE.raw,
+            sampleScene = "AI_ZOOM_IN"
+        )
+        var insertedStartMs = 0L
+        applyProjectEdit { proj ->
+            val updated = proj.copy(aspectRatio = targetAspect.raw)
+                .withTypedContent(newClips = proj.typedClips() + newClip)
+            insertedStartMs = updated.typedClips().firstOrNull { it.clipId == newClip.clipId }?.startMs ?: 0L
+            updated
+        }
+        _editorState.update { state ->
+            val updatedThumbs = if (result.previewBitmap != null) {
+                state.clipThumbnails + (newClip.clipId to listOf(result.previewBitmap))
+            } else state.clipThumbnails
+            state.copy(
+                selectedClipId = newClip.clipId,
+                playheadMs = insertedStartMs,
+                clipThumbnails = updatedThumbs
+            )
+        }
+        if (!result.videoUri.isNullOrBlank() && !result.videoUri.startsWith("ai_file://")) {
+            extractThumbnailsForClips(listOf(newClip))
+        }
+        showMessage("Added AI video '${result.title}' (${result.aspectRatio.raw}) to timeline!")
+    }
+
+    fun createOrEditAiImage(
+        prompt: String,
+        sourceBitmap: Bitmap?,
+        aspectRatioHint: String
+    ) {
+        viewModelScope.launch {
+            val actionLabel = if (sourceBitmap != null) "Editing image" else "Creating image"
+            _editorState.update {
+                it.copy(
+                    aiImageStudioState = AiImageStudioState.Loading(
+                        "$actionLabel with gemini-nano-banana-2.1 (may take 20–60s)..."
+                    )
+                )
+            }
+            val result = aiRepository.createOrEditImage(prompt, sourceBitmap, aspectRatioHint)
+            result.onSuccess { generated ->
+                _editorState.update {
+                    it.copy(
+                        aiImageStudioState = AiImageStudioState.Success(
+                            bitmap = generated.bitmap,
+                            promptUsed = prompt.trim(),
+                            isEdit = generated.isEdit
+                        )
+                    )
+                }
+            }.onFailure { err ->
+                _editorState.update {
+                    it.copy(
+                        aiImageStudioState = AiImageStudioState.Error(
+                            err.message ?: "Image generation failed."
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun addAiImageToTimeline(bitmap: Bitmap, label: String, durationSec: Int = 5) {
+        viewModelScope.launch {
+            val clipId = "clip_img_${UUID.randomUUID().toString().take(8)}"
+            val savedUri = mediaEngine.saveAiClipKeyframe(clipId, bitmap)
+            val durMs = (durationSec.coerceIn(2, 12) * 1000L)
+            val newClip = TimelineClip(
+                clipId = clipId,
+                label = label.trim().take(42).ifBlank { "AI Visual" },
+                sourceUri = savedUri,
+                startMs = 0L,
+                endMs = durMs,
+                trimStartMs = 0L,
+                trimEndMs = durMs,
+                transition = TransitionType.CROSS_FADE.raw,
+                sampleScene = "AI_ZOOM_IN"
+            )
+            var startMs = 0L
+            applyProjectEdit { proj ->
+                val updated = proj.withTypedContent(newClips = proj.typedClips() + newClip)
+                startMs = updated.typedClips().firstOrNull { it.clipId == clipId }?.startMs ?: 0L
+                updated
+            }
+            _editorState.update { state ->
+                state.copy(
+                    selectedClipId = clipId,
+                    playheadMs = startMs,
+                    clipThumbnails = state.clipThumbnails + (clipId to listOf(bitmap))
+                )
+            }
+            showMessage("Added '${newClip.label}' to timeline!")
+        }
+    }
+
+    fun saveAiImageToGallery(bitmap: Bitmap, title: String) {
+        viewModelScope.launch {
+            mediaEngine.saveBitmapToGallery(bitmap, title)
+                .onSuccess { showMessage("Saved AI image to Pictures/FrameCut.") }
+                .onFailure { err -> showMessage("Save failed: ${err.localizedMessage ?: "Storage error"}") }
+        }
+    }
+
+    fun generateAiMusic(
+        prompt: String,
+        option: MusicModelOption,
+        instrumentalOnly: Boolean
+    ) {
+        viewModelScope.launch {
+            _editorState.update {
+                it.copy(
+                    aiMusicGenState = AiMusicGenState.Loading(
+                        "Composing music with ${option.modelId} (may take 20–90s)..."
+                    )
+                )
+            }
+            val result = aiRepository.generateMusicTrack(prompt, option, instrumentalOnly)
+            result.onSuccess { generated ->
+                val trackId = "trk_ai_${UUID.randomUUID().toString().take(8)}"
+                val (localPath, durationMs) = mediaEngine.saveAiMusicFile(
+                    trackId = trackId,
+                    audioBytes = generated.audioBytes,
+                    mimeType = generated.mimeType
+                )
+                _editorState.update {
+                    it.copy(
+                        aiMusicGenState = AiMusicGenState.Success(
+                            trackId = trackId,
+                            title = generated.title,
+                            localAudioPath = localPath,
+                            durationMs = durationMs,
+                            lyricsOrNotes = generated.lyricsOrNotes,
+                            modelUsed = generated.modelUsed
+                        )
+                    )
+                }
+            }.onFailure { err ->
+                _editorState.update {
+                    it.copy(
+                        aiMusicGenState = AiMusicGenState.Error(
+                            err.message ?: "Music generation failed."
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun addGeneratedMusicToTimeline(result: AiMusicGenState.Success) {
+        val track = AudioTrack(
+            trackId = result.trackId,
+            name = result.title,
+            role = AudioRole.MUSIC.raw,
+            sourceUri = "ai_audio://${result.localAudioPath}",
+            volume = 0.65,
+            fadeInMs = 500L,
+            fadeOutMs = 1200L,
+            offsetMs = 0L,
+            durationMs = result.durationMs
+        )
+        applyProjectEdit { proj ->
+            proj.withTypedContent(newAudioTracks = proj.typedAudioTracks() + track)
+        }
+        _editorState.update { it.copy(selectedTrackId = track.trackId) }
+        showMessage("Added AI music '${result.title}' to audio timeline!")
+    }
+
     // --- 4K Export & Cloud Record ---
+    fun estimateExportSizeMb(
+        resolution: ResolutionOption,
+        codec: CodecOption,
+        fps: Long,
+        format: ExportFormatOption
+    ): Double {
+        val durationMs = _editorState.value.project?.totalDurationMs ?: 12000L
+        return mediaEngine.estimateExportSizeMb(durationMs, resolution, codec, fps, format)
+    }
+
     fun startExport(
         resolution: ResolutionOption,
         codec: CodecOption,
         fps: Long,
-        destination: ExportDestination
+        destination: ExportDestination,
+        format: ExportFormatOption = ExportFormatOption.MP4
     ) {
         val project = _editorState.value.project ?: return
         if (_editorState.value.isExporting) return
         stopPlayback()
+        applyProjectEdit(recordUndo = false) { it.copy(resolution = resolution.raw, frameRate = fps) }
+        val updatedProject = _editorState.value.project ?: project
         viewModelScope.launch {
             _editorState.update { it.copy(isExporting = true, exportState = null) }
             // Ensure latest project edits exist in Firestore before logging export
-            if (project.id.isNotBlank()) {
-                projectRepository.updateProject(project.copy(cloudBackupStatus = "EXPORTED"))
+            if (updatedProject.id.isNotBlank()) {
+                projectRepository.updateProject(updatedProject.copy(cloudBackupStatus = "EXPORTED"))
             }
             mediaEngine.exportProjectPipeline(
-                project = project,
+                project = updatedProject,
                 resolution = resolution,
                 codec = codec,
                 fps = fps,
+                format = format,
                 batterySaverEnabled = localSettings.value.batterySaverEnabled
             ).collect { progress ->
                 _editorState.update { it.copy(exportState = progress) }
-                if (progress.completedOutputUri != null && project.id.isNotBlank()) {
+                if (progress.completedOutputUri != null && updatedProject.id.isNotBlank()) {
                     val record = ExportRecord(
                         userId = currentUserId,
-                        projectId = project.id,
-                        projectTitle = project.title,
+                        projectId = updatedProject.id,
+                        projectTitle = updatedProject.title,
                         resolution = resolution.raw,
                         codec = codec.raw,
                         frameRate = fps,
-                        durationMs = project.totalDurationMs,
+                        durationMs = updatedProject.totalDurationMs,
                         estimatedSizeMb = progress.estimatedSizeMb,
                         destination = destination.raw,
                         localOutputUri = progress.completedOutputUri,
@@ -962,8 +1675,8 @@ class StudioViewModel(
                     if (localSettings.value.autoOfflineBackup) {
                         projectRepository.saveLocalOfflineBackup(
                             currentUserId,
-                            project,
-                            "Pre-Export ${resolution.label} Snapshot"
+                            updatedProject,
+                            "Pre-Export ${resolution.label} ${format.label} Snapshot"
                         )
                     }
                     _editorState.update { it.copy(isExporting = false) }

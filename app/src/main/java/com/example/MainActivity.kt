@@ -8,10 +8,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
@@ -63,44 +65,80 @@ private fun AppRoot() {
     val auth = Firebase.auth
     val currentUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
     val user = currentUser
+    var isGuestMode by rememberSaveable { mutableStateOf(false) }
 
-    if (user == null) {
-        FrameCutTheme(themeMode = StudioThemeMode.OLED_DARK) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.background
-            ) {
-                AuthScreen(onAuthSuccess = { /* authStateFlow updates automatically */ })
+    LaunchedEffect(user) {
+        if (user != null && isGuestMode) {
+            isGuestMode = false
+        }
+    }
+
+    when {
+        user != null -> {
+            val uid = user.uid
+            key(uid) {
+                StudioAppHost(
+                    currentUserId = uid,
+                    userDisplayName = user.displayName ?: user.email?.substringBefore("@") ?: "Studio Editor",
+                    userEmail = user.email.orEmpty(),
+                    isGuestMode = false,
+                    onExitGuestMode = {}
+                )
             }
         }
-    } else {
-        val uid = user.uid
-        key(uid) {
-            AuthenticatedStudioApp(
-                currentUserId = uid,
-                userDisplayName = user.displayName ?: user.email?.substringBefore("@") ?: "Studio Editor",
-                userEmail = user.email.orEmpty()
-            )
+
+        isGuestMode -> {
+            key(ProjectRepository.GUEST_USER_ID) {
+                StudioAppHost(
+                    currentUserId = ProjectRepository.GUEST_USER_ID,
+                    userDisplayName = "Guest Editor",
+                    userEmail = "Guest Mode • Local Only",
+                    isGuestMode = true,
+                    onExitGuestMode = { isGuestMode = false }
+                )
+            }
+        }
+
+        else -> {
+            FrameCutTheme(themeMode = StudioThemeMode.OLED_DARK) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    AuthScreen(
+                        onAuthSuccess = { isGuestMode = false },
+                        onContinueAsGuest = { isGuestMode = true }
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun AuthenticatedStudioApp(
+private fun StudioAppHost(
     currentUserId: String,
     userDisplayName: String,
-    userEmail: String
+    userEmail: String,
+    isGuestMode: Boolean,
+    onExitGuestMode: () -> Unit
 ) {
     val studioViewModel: StudioViewModel = viewModel(
-        key = currentUserId,
+        key = "${currentUserId}_$isGuestMode",
         factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[APPLICATION_KEY]) {
                     "APPLICATION_KEY missing from CreationExtras"
                 }
                 val firestore = ProjectRepository.createConfiguredFirestore(app)
-                val backupDao = BackupDatabase.getInstance(app).projectBackupDao()
-                val projectRepository = ProjectRepository(firestore, backupDao)
+                val db = BackupDatabase.getInstance(app)
+                val projectRepository = ProjectRepository(
+                    db = firestore,
+                    backupDao = db.projectBackupDao(),
+                    guestProjectDao = db.guestProjectDao(),
+                    guestExportDao = db.guestExportDao(),
+                    isGuestMode = isGuestMode
+                )
                 val aiRepository = AiVideoAssistantRepository()
                 val preferences = StudioPreferences(app)
                 val mediaEngine = VideoMediaEngine(app)
@@ -110,14 +148,15 @@ private fun AuthenticatedStudioApp(
                     preferences = preferences,
                     mediaEngine = mediaEngine,
                     currentUserId = currentUserId,
-                    userDisplayName = userDisplayName
+                    userDisplayName = userDisplayName,
+                    isGuestMode = isGuestMode
                 )
             }
         }
     )
 
     val settings by studioViewModel.localSettings.collectAsStateWithLifecycle()
-    var route by remember(currentUserId) { mutableStateOf<StudioRoute>(StudioRoute.Hub) }
+    var route by remember(currentUserId, isGuestMode) { mutableStateOf<StudioRoute>(StudioRoute.Hub) }
 
     FrameCutTheme(themeMode = settings.themeMode) {
         Surface(
@@ -128,6 +167,8 @@ private fun AuthenticatedStudioApp(
                 StudioRoute.Hub -> ProjectsHubScreen(
                     viewModel = studioViewModel,
                     userEmail = userEmail,
+                    isGuestMode = isGuestMode,
+                    onExitGuestMode = onExitGuestMode,
                     onOpenEditor = { projectId ->
                         route = StudioRoute.Editor(projectId)
                     },

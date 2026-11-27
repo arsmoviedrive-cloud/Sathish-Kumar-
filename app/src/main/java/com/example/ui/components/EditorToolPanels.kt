@@ -22,6 +22,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BatterySaver
@@ -75,10 +77,12 @@ import com.example.data.model.CaptionStyle
 import com.example.data.model.CodecOption
 import com.example.data.model.ColorPreset
 import com.example.data.model.ExportDestination
+import com.example.data.model.ExportFormatOption
 import com.example.data.model.ResolutionOption
 import com.example.data.model.TransitionType
 import com.example.data.model.VideoProject
 import com.example.data.model.formatTimecode
+import com.example.media.StudioAudioCatalog
 import com.example.ui.theme.AudioAmber
 import com.example.ui.theme.AudioEmerald
 import com.example.ui.theme.CaptionViolet
@@ -95,7 +99,8 @@ fun TimelineToolsPanel(
     state: EditorUiState,
     viewModel: StudioViewModel,
     onRecordClip: () -> Unit,
-    onImportClip: () -> Unit
+    onImportClip: () -> Unit,
+    onOpenAiClipGenerator: () -> Unit
 ) {
     val clips = remember(project.clips) { project.typedClips() }
     val selectedClip = clips.firstOrNull { it.clipId == state.selectedClipId } ?: clips.firstOrNull()
@@ -120,6 +125,15 @@ fun TimelineToolsPanel(
                 Icon(Icons.Filled.Videocam, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("Record Clip")
+            }
+            FilledTonalButton(
+                onClick = onOpenAiClipGenerator,
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.testTag("editor_ai_clip_button")
+            ) {
+                Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("AI Clip")
             }
             FilledTonalButton(
                 onClick = onImportClip,
@@ -162,6 +176,7 @@ fun TimelineToolsPanel(
         }
 
         if (selectedClip != null) {
+            val selectedIndex = clips.indexOfFirst { it.clipId == selectedClip.clipId }.coerceAtLeast(0)
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
                 shape = RoundedCornerShape(14.dp),
@@ -174,7 +189,7 @@ fun TimelineToolsPanel(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Selected: ${selectedClip.label}",
+                            text = "#${selectedIndex + 1} • ${selectedClip.label}",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
@@ -185,7 +200,51 @@ fun TimelineToolsPanel(
                         )
                     }
 
-                    // Precision Trim Nudge Buttons
+                    // Sequence Reorder Controls
+                    if (clips.size > 1) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilledTonalButton(
+                                onClick = { viewModel.moveSelectedClipBy(-1) },
+                                enabled = selectedIndex > 0,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("move_clip_earlier_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text("Move Earlier", style = MaterialTheme.typography.labelMedium)
+                            }
+                            FilledTonalButton(
+                                onClick = { viewModel.moveSelectedClipBy(1) },
+                                enabled = selectedIndex < clips.lastIndex,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("move_clip_later_button")
+                            ) {
+                                Text("Move Later", style = MaterialTheme.typography.labelMedium)
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Precision Trim Controls (Playhead In/Out + 0.25s Nudges)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(
+                            onClick = { viewModel.trimSelectedClipToPlayhead(trimStart = true) },
+                            modifier = Modifier.weight(1f).testTag("panel_trim_in_playhead")
+                        ) { Text("Trim In @ Head", style = MaterialTheme.typography.labelMedium) }
+                        FilledTonalButton(
+                            onClick = { viewModel.trimSelectedClipToPlayhead(trimStart = false) },
+                            modifier = Modifier.weight(1f).testTag("panel_trim_out_playhead")
+                        ) { Text("Trim Out @ Head", style = MaterialTheme.typography.labelMedium) }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
                             onClick = { viewModel.trimSelectedClip(250L, 0L) },
@@ -249,6 +308,12 @@ fun AiStudioPanel(
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // 0. Generative Media Suite: Text->Video, Animate Photo, Create/Edit Image, Lyria Music
+        AiGenerativeStudioPanel(
+            state = state,
+            viewModel = viewModel
+        )
+
         // Active AI Status Banner
         when (val ai = state.aiTaskState) {
             is AiTaskState.Loading -> {
@@ -596,7 +661,8 @@ fun AudioMixerPanel(
     project: VideoProject,
     state: EditorUiState,
     viewModel: StudioViewModel,
-    onImportAudioTrack: () -> Unit
+    onImportAudioTrack: () -> Unit,
+    onOpenAiMusic: () -> Unit
 ) {
     val tracks = remember(project.audioTracks) { project.typedAudioTracks() }
 
@@ -612,7 +678,19 @@ fun AudioMixerPanel(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onOpenAiMusic,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    modifier = Modifier.testTag("audio_mixer_generate_music_button")
+                ) {
+                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text("AI Music")
+                }
                 FilledTonalButton(
                     onClick = onImportAudioTrack,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
@@ -623,19 +701,45 @@ fun AudioMixerPanel(
                     Text("Import Audio")
                 }
                 OutlinedButton(
-                    onClick = { viewModel.addAudioTrack("SFX Layer", AudioRole.SFX) },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                    onClick = { viewModel.addStudioAudioPreset(StudioAudioCatalog.sfxPresets.first(), atPlayhead = true) },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                    modifier = Modifier.testTag("mixer_add_sfx_button")
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     Text("SFX")
                 }
             }
 
+            Spacer(modifier = Modifier.width(8.dp))
+
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Auto-Duck", style = MaterialTheme.typography.labelMedium)
                 Switch(
                     checked = state.autoDuckMusic,
                     onCheckedChange = { viewModel.toggleAutoDuckMusic(it) }
+                )
+            }
+        }
+
+        // Quick-Add Studio Background Music & Sound Effects Chips
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            StudioAudioCatalog.musicPresets.take(2).forEach { preset ->
+                FilterChip(
+                    selected = false,
+                    onClick = { viewModel.addStudioAudioPreset(preset, atPlayhead = false) },
+                    label = { Text("+ ${preset.name}", style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+            StudioAudioCatalog.sfxPresets.take(4).forEach { preset ->
+                FilterChip(
+                    selected = false,
+                    onClick = { viewModel.addStudioAudioPreset(preset, atPlayhead = true) },
+                    label = { Text("FX: ${preset.name}", style = MaterialTheme.typography.labelSmall) }
                 )
             }
         }
@@ -848,11 +952,13 @@ fun ExportBackupPanel(
     state: EditorUiState,
     batterySaverEnabled: Boolean,
     viewModel: StudioViewModel,
+    onOpenRenderSheet: () -> Unit,
     onExportOfflineJson: (String) -> Unit
 ) {
     val context = LocalContext.current
     var resolution by remember(project.resolution) { mutableStateOf(ResolutionOption.fromRaw(project.resolution)) }
     var fps by remember(project.frameRate) { mutableStateOf(project.frameRate) }
+    var format by remember { mutableStateOf(ExportFormatOption.MP4) }
     var codec by remember { mutableStateOf(CodecOption.HEVC_H265) }
     var destination by remember { mutableStateOf(ExportDestination.DEVICE_GALLERY) }
 
@@ -877,7 +983,7 @@ fun ExportBackupPanel(
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Icon(Icons.Filled.HighQuality, contentDescription = null, tint = PlayheadCyan)
-                        Text("4K Render & Social Export", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text("Render & Social Export", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Icon(Icons.Filled.BatterySaver, contentDescription = null, tint = AudioEmerald, modifier = Modifier.size(16.dp))
@@ -889,21 +995,29 @@ fun ExportBackupPanel(
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ResolutionOption.entries.forEach { res ->
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        ResolutionOption.HD_720P,
+                        ResolutionOption.FHD_1080P,
+                        ResolutionOption.UHD_4K
+                    ).forEach { res ->
                         FilterChip(
                             selected = resolution == res,
                             onClick = {
                                 resolution = res
                                 viewModel.setRenderSpec(res, fps)
                             },
-                            label = { Text(res.label) }
+                            label = { Text(res.label) },
+                            modifier = Modifier.testTag("export_tab_resolution_${res.raw.lowercase()}")
                         )
                     }
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(24L, 30L, 60L).forEach { rate ->
+                    listOf(30L, 60L).forEach { rate ->
                         FilterChip(
                             selected = fps == rate,
                             onClick = {
@@ -913,9 +1027,19 @@ fun ExportBackupPanel(
                             label = { Text("${rate}fps") }
                         )
                     }
+                    ExportFormatOption.entries.forEach { fmt ->
+                        FilterChip(
+                            selected = format == fmt,
+                            onClick = { format = fmt },
+                            label = { Text(fmt.label) }
+                        )
+                    }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     CodecOption.entries.forEach { c ->
                         FilterChip(
                             selected = codec == c,
@@ -956,11 +1080,11 @@ fun ExportBackupPanel(
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { viewModel.startExport(resolution, codec, fps, destination) },
+                        onClick = onOpenRenderSheet,
                         enabled = !state.isExporting,
                         modifier = Modifier.weight(1f).testTag("start_export_button")
                     ) {
-                        Text(if (state.isExporting) "Rendering..." else "Export ${resolution.raw} ${fps}fps")
+                        Text(if (state.isExporting) "Rendering..." else "Configure & Render (${resolution.raw} ${fps}fps ${format.label})")
                     }
 
                     val shareUri: Uri? = progress?.completedShareUri
